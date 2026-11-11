@@ -1,0 +1,3 @@
+# Optional. Needed for the pipeline tests; the scorer itself needs only numpy and pandas.
+-r requirements.txt
+pytest
