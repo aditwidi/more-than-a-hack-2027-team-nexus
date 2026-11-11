@@ -275,9 +275,41 @@ def build(data_dir=None, verbose=True):
         ball_metres[:, 0], io.PITCH[0] - ball_metres[:, 0],
         ball_metres[:, 1], io.PITCH[1] - ball_metres[:, 1]]).astype(np.float32)
 
+    # Out of play. Coordinates are normalised to the pitch, so a ball beyond [0, 1] on either axis is
+    # off the field. Measured on the public window: 27.6% of dead frames and **0.0% of live ones** --
+    # a rare case where a single cheap feature is almost pure evidence (see docs/pipeline.md).
+    outside_x = np.maximum(-filled[:, 0], filled[:, 0] - 1.0)
+    outside_y = np.maximum(-filled[:, 1], filled[:, 1] - 1.0)
+    columns["ball_outside_pitch"] = ((outside_x > 0) | (outside_y > 0)).astype(np.float32)
+    columns["ball_beyond_line_m"] = np.maximum.reduce([
+        outside_x * io.PITCH[0], outside_y * io.PITCH[1],
+        np.zeros(n_frames)]).astype(np.float32)
+
     # --- ownership evidence (D2) ------------------------------------------------------------
     columns.update(ownership_evidence(metres, slot_teams, ball_metres))
     columns.update(team_shape(metres, slot_teams, ball_metres))
+
+    # --- movement (D3) ----------------------------------------------------------------------
+    # Lang et al. 2022 classify stoppages from player movement alone at 92% accuracy: during dead
+    # ball, players stop, converge and walk. The tracking reports speed per slot, so this is free.
+    # The ball is absent on 41% of graded frames, so a signal that does not need it is valuable.
+    speed = slots[..., 2]
+    tracked = ~np.isnan(speed)
+    n_tracked = np.maximum(tracked.sum(axis=1), 1)
+    speed_zeroed = np.where(tracked, speed, 0.0)
+    columns["player_speed_mean"] = (speed_zeroed.sum(axis=1) / n_tracked).astype(np.float32)
+    # Count only *tracked* slots: an untracked slot is not a stationary player, and counting it as
+    # one pushes this share to ~1.0 everywhere.
+    columns["player_speed_share_still"] = (
+        (tracked & (speed < 1.0)).sum(axis=1) / n_tracked).astype(np.float32)
+    columns["player_speed_share_moving"] = (
+        (tracked & (speed > 3.0)).sum(axis=1) / n_tracked).astype(np.float32)
+
+    # Loose ball: nobody within playing distance of it. "Controlled possession" requires a player
+    # to actually have it (CHALLENGE.md), so a visible but unattended ball is evidence for D.
+    d_nearest = np.minimum(columns["d_home"], columns["d_away"])
+    columns["d_nearest"] = d_nearest
+    columns["ball_loose"] = ((present & (d_nearest > 5.0))).astype(np.float32)
 
     # --- tags (D3) --------------------------------------------------------------------------
     columns["in_set_piece"] = assets["in_set_piece"].astype(np.float32)

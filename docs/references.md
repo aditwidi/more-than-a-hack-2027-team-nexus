@@ -199,6 +199,22 @@ nothing in this note depends on it. Treat as a lead for a future iteration, not 
 
 ---
 
+## 6b. Empirical findings from this dataset (verified locally, not from the literature)
+
+Measured with `pipeline/diag.py` and the public window. These are *our* numbers and are the ones the
+design actually leans on; they are tagged `[verified locally]` throughout §10.
+
+| finding | measurement | consequence |
+|---|---|---|
+| Ball beyond the touchline/goal line (coordinates outside [0, 1]) | 27.6% of dead frames, **0.0% of live frames** | near-pure evidence for `D`; worth 4.0 log-odds |
+| Mean tracked player speed | 1.43 m/s dead vs 2.38 m/s live | movement is the dead-ball signal that survives an absent ball (consistent with Lang et al.) |
+| Share of players above 3 m/s | 8.7% dead vs 30.6% live | strongest single movement feature |
+| Ball absent | 33.6% of dead frames vs 6.4% of live frames | absence is evidence but far from sufficient — the published baseline treats it as necessary and sufficient, which caps its `D` recall at 0.21 |
+| Set-piece interval | covers 15.9% of the public window but 45.4% of its dead frames | restarts are where dead ball concentrates |
+| Track slots | 24 home / 22 away in the metadata | a sum over slots biases ownership toward home; predicted alive home share ran 0.71 vs truth 0.57 |
+
+
+
 ## 7. What the literature does *not* solve for this competition
 
 | gap | detail | consequence |
@@ -257,6 +273,16 @@ sweep (spellF1 0.0486 → 0.2433 from smoothing alone; `[EVALUATION.md](../EVALU
 ones on the public window; removing half the spurious possessions lifts F1@IoU0.5 from 0.326 to
 ~0.42, removing nearly all of them to ~0.58 (upper bound, ignores the recall cost).
 `E`: largest single effect available to us.
+
+**Measured after implementation** (`docs/pipeline.md`): argmax → Viterbi → cleanup took the match
+from 918 to 436 possessions (mean 3.55 s → 8.07 s). Multi-scale context alone was worth 918 → 495;
+the switch penalty then 495 → 436. The two "confidence" ideas (interpolation span discount,
+distance gate) were **nearly neutral** — worth recording, because they were motivated by the
+literature and did not pay off.
+
+**Correction to T5 above.** A min-dwell merge must never merge the same team *across* a dead
+stretch: CHALLENGE.md settles that `H H D D H H` is two possessions, and merging across `D` would
+actively destroy the metric. Short `D` is absorbed into a possession; long `D` is a genuine break.
 
 ### D6 — Do not tune on the 5 public minutes
 *Evidence*: `[EVALUATION.md](../EVALUATION.md)` — the window picks the wrong smoothing variant even

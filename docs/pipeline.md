@@ -82,9 +82,94 @@ On the public window: **spellF1 0.0464, 95 possessions** (published floor `smoot
 - No video decode and no broadcast (see references.md D8).
 - No per-player identity: the 46 slots are tracklets, so all evidence is collective.
 
-## Step 2 (next): the decoder
+## Step 2 (done): the decoder
 
-Emissions from these features (dead/alive head separate from the H/A head), then structured
-decoding — Viterbi/HSMM over `{H, A, D}` with a switch penalty and minimum dwell. Judged by the same
-label-free report plus the public window **only for correctness** (`--bootstrap 1000` before
-believing any delta), against the two controls already on the board.
+`pipeline/emissions.py` scores each frame for `H`, `A` and `D` as log-odds; `pipeline/decode.py`
+turns those scores into a possession sequence in two stages; `pipeline/submit.py` writes the file.
+
+```bash
+python -m pipeline.submit --out my_team.csv      # ~2 s, deterministic
+python -m pipeline.ablate --write                # every variant -> evaluation/results/abl_*.csv
+python evaluation/run_evaluation.py
+```
+
+### Emissions: two heads, not three classes
+
+| head | evidence | prior justification |
+|---|---|---|
+| **dead** | ball gap length (0.55 log-odds/s, capped 8 s), ball beyond the touchline (`dead_out_of_play` 4.0), set-piece interval (0.9), long-gap bonus (1.2), player stillness (1.5), share of players moving (−1.2), loose ball (0.8), and a `dead_bias` of −1.5 | effective playing time in professional football is ~55–60 of 90 minutes, so ~35–40% dead; Lang et al. 2022 classify stoppages from player movement alone at 92% |
+| **possession** | `score_margin` = Σexp(−d/4 m) over each team's slots, blended 0.2/0.4/0.4 over this frame, ±1 s and ±4 s, scaled by 1.8 | Borghesi et al. 2023: the five players nearest the ball reach 79.4% on the 3-class task vs 58.4% for ball-only |
+| discount | ownership evidence multiplied by `exp(−fill_span/2 s)`, and by 0.35 when the ball is >25 m from everyone | in contested phases possession stays with the last team (CHALLENGE.md); an interpolated ball is a guess |
+
+### Decoding: Viterbi, then structural cleanup
+
+Switch costs are asymmetric in log-odds: **H↔A 6.0** (changing team *is* the possession event) versus
+**H/A↔D 2.5** (stoppages are frequent and brief). Then runs shorter than the minimum dwell are
+absorbed, with the priority order: same-label neighbour → blip inside a stoppage → short stoppage
+inside a possession → longer neighbour. A dead stretch **never** merges the same team across it,
+because `H H D D H H` is two possessions (CHALLENGE.md) and the metric is built on that.
+
+### What the ablation says (`python -m pipeline.ablate`)
+
+Label-free measurements, full match:
+
+| variant | possessions | per half | mean s | dead share |
+|---|---|---|---|---|
+| `argmax` (no decoder) | 918 | 481/437 | 3.55 | 0.487 |
+| no multi-scale context (weights 1/0/0) | 847 | 439/408 | 3.85 | 0.487 |
+| no Viterbi (switch 0) → switch 2 → 4 → 6 | 918 → 578 → 522 → 495 | | 3.6 → 5.7 → 6.3 → 6.6 | 0.49 → 0.48 |
+| no confidence discount | 495 | 255/240 | 6.62 | 0.484 |
+| no distance gate | 495 | 255/240 | 6.62 | 0.484 |
+| **final** (switch 6, dwell 2 s, dead bias −1.5) | **436** | 214/222 | **8.07** | **0.447** |
+
+Read honestly: **multi-scale context and the switch penalty do the work** (918 → 495 possessions);
+the confidence discount and distance gate are nearly neutral once context is in place, and are kept
+because they are cheap and defensible, not because the ablation demands them. The dead-ball features
+are what raised `D` recall: predicted-dead share of set-piece frames 0.32 → 0.47.
+
+### Two features worth more than their cost
+
+Measured on the public window, as a check that they mean what we think (not as a fitting target):
+
+| signal | dead frames | live frames |
+|---|---|---|
+| ball beyond the touchline/goal line | **27.6%** | **0.0%** |
+| mean tracked player speed | 1.43 m/s | 2.38 m/s |
+| share of players above 3 m/s | 8.7% | 30.6% |
+| nearest player > 5 m from the ball | 35.3% | 18.1% |
+
+The first is nearly pure evidence and was invisible in the original feature set: a ball outside the
+pitch coordinates is out of play, always.
+
+### Scores on the public window (a consistency check, not a target)
+
+| submission | macroF1 | spellF1 | possessions (truth 17) | mean duration (truth 14.2 s) |
+|---|---|---|---|---|
+| `baseline_smooth50` (published floor) | 0.6207 | 0.3256 | 26 | 10.8 |
+| `baseline_smooth125` | 0.5812 | **0.4242** | 16 | 18.5 |
+| **this pipeline** | **0.6400** | 0.3889 | 19 | 13.6 |
+
+It beats the published floor on both metrics and lands between the two smoothing baselines on
+`spellF1` — while, unlike `smooth125`, staying inside the label-free structure priors. Per
+`EVALUATION.md`, the public window cannot rank these: `smooth125` is the best of the published
+baselines on 17 possessions and the *worse* of the two on the full match.
+
+### Known weaknesses (measured, not guessed)
+
+| weakness | evidence |
+|---|---|
+| home bias in live play | predicted alive share on H = 0.71 vs truth 0.57 in the public window; `A` recall 0.55 vs the baseline's 0.77. The track slots are 24 home / 22 away, so an unnormalised Σexp(−d) is biased toward home; a top-k mean per team is the obvious fix. |
+| dead ball with a visible ball | `D` recall 0.43; 65% of dead frames in the window have a visible ball and we catch ~10% of those. Restart timing (throw-in, free kick) is the missing evidence. |
+| possession length still short | 8.1 s mean vs the 8–15 s prior, at the lower edge. More evidence, not more smoothing, is the lever — the switch penalty saturates by 8. |
+| boundary latency | mean −6.3 frames at transitions; the first frames of a possession are systematically missed. |
+
+## Step 3 (candidates)
+
+1. **Normalise ownership per team** (top-3 mean instead of a sum over slots) — attacks the measured
+   home bias directly.
+2. **Restart-aware dead ball** — use the set-piece `Type` and the kickoff anchors to place dead
+   stretches, not just to add a bonus.
+3. **Ball-state head** — visible-but-uncontrolled vs visible-and-controlled, using ball speed and
+   nearest-player distance together (Peral et al. 2026 do this as a separate classification head).
+4. **Tabular gradient boosting** on the feature matrix (Lang's AdaBoost configuration) as an
+   emission model, trained on pseudo-labels — only if the rules plateau.
