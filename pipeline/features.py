@@ -330,6 +330,20 @@ def build(data_dir=None, verbose=True):
     columns["d_nearest"] = d_nearest
     columns["ball_loose"] = ((present & (d_nearest > 5.0))).astype(np.float32)
 
+    # How long the ball has been stationary, which the instantaneous channels cannot express.
+    # A free kick, a throw-in being set up or a goal kick leaves the ball still for seconds while
+    # live play almost never does: measured on the public window, a ball still for >2 s with slow
+    # players carries P(dead) = 0.494 against a base rate of 0.196, and covers 40% of dead frames.
+    still = present & (ball_speed < 0.5)
+    index = np.arange(n_frames)
+    # -1 (not 0) for a still frame, so the first still frame counts 1 rather than 0.
+    last_moving = np.maximum.accumulate(np.where(still, -1, index))
+    columns["ball_still_frames"] = np.minimum(index - last_moving, 250).astype(np.float32)
+
+    slow = np.clip((2.5 - columns["player_speed_mean"]) / 2.5, 0.0, 1.0)
+    columns["dead_still_combo"] = (
+        np.clip(columns["ball_still_frames"] / (4.0 * io.FPS), 0.0, 1.0) * slow).astype(np.float32)
+
     # --- tags (D3) --------------------------------------------------------------------------
     columns["in_set_piece"] = assets["in_set_piece"].astype(np.float32)
     columns["tag_team"] = assets["tag_team"].astype(np.float32)
@@ -337,6 +351,8 @@ def build(data_dir=None, verbose=True):
     # Signed possession prior, accumulated in the reader over both instances of each phase (the
     # attacking team's code and the defending team's code share an interval). See io.py.
     columns["tag_possession"] = assets["tag_possession"]
+    # Shaped dead-ball prior around set-piece restarts (see io.py for the shape and why).
+    columns["restart_dead"] = np.asarray(assets["restart_dead"], dtype=np.float32)
     for i, name in enumerate(io.SET_PIECE_TYPES):
         columns["sp_{}".format(name.replace(" ", "_").replace("(", "").replace(")", ""))] = (
             assets["set_piece_type"] == i).astype(np.float32)

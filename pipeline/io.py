@@ -157,6 +157,7 @@ def load_smart_tagging(path, n_frames=N_FRAMES):
     ``code_flags``     dict of code -> bool array, one entry per Smart Tagging code
     ``code_instances`` dict of code -> number of instances in the file
     ``tag_possession`` float32 -- signed possession prior in [-1, 1], +1 home, -1 away
+    ``restart_dead``   float32 -- [0, 1] dead-ball prior shaped around set-piece restarts
     ``meta``           dict of tag group -> {value: instance count}, for verification against DATA.md
 
     Tags are nested as ``<label><group>Team</group><text>Barcelona</text></label>``, so they have to
@@ -174,6 +175,7 @@ def load_smart_tagging(path, n_frames=N_FRAMES):
     tag_team = np.zeros(n_frames, dtype=np.int8)
     signed = np.zeros(n_frames, dtype=np.float32)
     votes = np.zeros(n_frames, dtype=np.int16)
+    restart_dead = np.zeros(n_frames, dtype=np.float32)
     code_flags = {}
     code_instances = {}
     meta = {}
@@ -222,9 +224,19 @@ def load_smart_tagging(path, n_frames=N_FRAMES):
             if label in type_index:
                 sp_type[first:last + 1] = type_index[label]
 
+            # Extend backwards: the ball is already dead while it is being retrieved.
+            before = int(round(RESTART_DEAD_BEFORE_S * FPS))
+            span_first = max(0, first - before)
+            span_last = last
+            length_s = max((last - first + 1), 1) / float(FPS)
+            offsets = (np.arange(span_first, span_last + 1) - first) / float(FPS)
+            restart_dead[span_first:span_last + 1] = np.maximum(
+                restart_dead[span_first:span_last + 1],
+                _restart_kernel(offsets, length_s))
+
     tag_possession = np.where(votes > 0, signed / np.maximum(votes, 1), 0.0).astype(np.float32)
     return {"in_set_piece": in_sp, "set_piece_type": sp_type, "tag_team": tag_team,
-            "tag_possession": tag_possession,
+            "tag_possession": tag_possession, "restart_dead": restart_dead,
             "code_flags": code_flags, "code_instances": code_instances, "meta": meta}
 
 
@@ -242,6 +254,25 @@ def _seconds(text):
     for part in text.split(":"):
         total = total * 60.0 + float(part)
     return total
+
+
+# Dead-ball prior around a restart. A tagged SET PIECES interval spans the whole restart sequence --
+# ball retrieved, players set, the restart struck, play resumed -- and the strike is not at a fixed
+# offset from the start (the Kick Off (Start) instance runs 443.88-448.88 s for a kickoff struck at
+# 447.44 s, i.e. 3.5 s in). So the prior is shaped by *fraction of the interval*: certainly dead at
+# the start and through the set-up, decaying to nothing by the end, where play has resumed.
+RESTART_DEAD_BEFORE_S = 1.5     # frames just before the tagged start are dead too
+RESTART_DEAD_HOLD_FRACTION = 0.4  # fraction of the interval that is certainly dead
+
+
+def _restart_kernel(offset_s, length_s):
+    """Dead-ball prior for frames at ``offset_s`` from the start of an interval of ``length_s``."""
+    offset_s = np.asarray(offset_s, dtype=np.float32)
+    length_s = max(float(length_s), 1e-3)
+    fraction = offset_s / length_s
+    tail = np.clip((1.0 - fraction) / (1.0 - RESTART_DEAD_HOLD_FRACTION), 0.0, 1.0)
+    value = np.where(fraction <= RESTART_DEAD_HOLD_FRACTION, 1.0, tail)
+    return np.where(offset_s < 0, 1.0, value).astype(np.float32)
 
 
 def load_all(data_dir=None):

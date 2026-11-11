@@ -218,11 +218,76 @@ possessions, mean 9.76 s, dead share 0.446, home share 0.587.
 | boundary latency −2.8 frames (window) | improved from −6.3, still early |
 | home share 0.619 vs 0.573 (window) | 0.587 label-free; within the noise of a 5-minute sample, but worth watching |
 
-## Step 4 (candidates)
+## Step 4: restart placement (negative) and ball-stationary duration (positive)
 
-1. **Restart-aware dead ball** — place dead stretches at the set-piece `Type` and kickoff anchors
-   instead of only adding a log-odds bonus.
-2. **Ball-state head** — visible-but-uncontrolled vs visible-and-controlled (Peral et al. 2026 treat
-   this as its own classification), which is the remaining `D` recall gap.
-3. **Tabular gradient boosting** on the feature matrix (Lang's AdaBoost configuration) as an emission
-   model, trained on pseudo-labels — only if the rules plateau.
+### 1. Restart-aware dead ball — tried, measured, rejected
+
+The hypothesis: a tagged `SET PIECES` interval spans the whole restart sequence, so its *shape* can
+place dead ball. The prior is real — **P(dead | interval start) = 0.571** against a 0.196 base rate —
+but using it as a dead-ball booster made everything worse:
+
+| `dead_restart` weight | D recall | D precision | team accuracy | dead share |
+|---|---|---|---|---|
+| 0.0 | 0.41 | 0.58 | 0.773 | 0.446 |
+| 2.5 | 0.43 | 0.52 | 0.747 | 0.493 |
+| 4.0 | 0.49 | 0.47 | 0.708 | 0.523 |
+
+It buys recall by claiming live frames: 43% of the interval start is *not* dead, because play
+resumes inside the interval and nothing tells us where the restart action sits (the Kick Off (Start)
+instance covers 443.88–448.88 s for a kickoff struck at 447.44 s, i.e. 3.5 s in, and that offset is
+not constant across set-piece types). The weight is therefore **0.0** by default, the feature and the
+kernel stay in the code, and the negative result is recorded here rather than deleted. What would
+make restarts usable is knowing *when the ball was struck* — a ball-state head, not a prior.
+
+### 2. Ball-stationary duration — kept
+
+The instantaneous channels could not express "the ball has not moved for six seconds", which is what
+a free kick or a throw-in being set up looks like. A run-length feature (`ball_still_frames`) and its
+combination with slow players (`dead_still_combo`) added the missing evidence:
+
+- `P(dead | ball still > 2 s and players slow) = 0.494` against a 0.196 base, covering 40% of dead
+  frames — exactly the population the earlier model missed (dead with a *visible* ball).
+- At weight 4.0: **D recall 0.41 → 0.56**, **D precision 0.58 → 0.68**, team accuracy 0.773 → 0.797,
+  dead share 0.446 → 0.475.
+
+Weights 3/4/5/6 gave spellF1 0.4343 / 0.4444 / 0.4111 / 0.3568 and macroF1 0.6699 / 0.7205 / 0.7548 /
+0.7504. 4.0 is where precision and recall both improved and the dead share stays closest to the
+football prior; above that the decoder starts calling live frames dead and the structure degrades.
+
+### 3. Minimum possession 2 s → 3 s
+
+A post-pass on the finished sequence, chosen on the same CHALLENGE.md definition (controlled
+possession = the ball kept a few seconds) and on label-free structure: 398 possessions over the match
+at 8.45 s mean, against 401 at 8.38 s for 2 s. Both metrics agree on 3 s, which is unusual enough to
+be worth noting.
+
+### Result
+
+| submission | macroF1 | spellF1 | possessions (truth 17) | duration (truth 14.2 s) | share err | D F1 |
+|---|---|---|---|---|---|---|
+| `baseline_smooth50` (floor) | 0.6207 | 0.3256 | 26 | 10.8 | 0.048 | 0.32 |
+| `baseline_smooth125` | 0.5812 | 0.4242 | 16 | 18.5 | 0.052 | 0.15 |
+| Step 3 | 0.6511 | 0.4471 | 17 | 15.2 | 0.047 | 0.48 |
+| **Step 4 (`nexus_v7`)** | **0.7335** | **0.4571** | 18 | 13.8 | 0.024 | **0.68** |
+
+Label-free, full match: 398 possessions (183 / 215 per half), mean 8.45 s, dead share 0.476, home
+share 0.581.
+
+### Still open
+
+| weakness | status |
+|---|---|
+| `A` recall | 0.65 vs the baseline's 0.77; away possessions with a missing ball are still absorbed into the previous state |
+| home share 0.61 / 0.55 per half | label-free 0.581; the public window's truth is 0.573, so the residual is small but unexplained |
+| boundary latency −3 to −7 frames | transitions are placed slightly early; a restart-timing signal would fix both this and the rejected restart prior |
+| dead share 0.476 | above the 35–40% football prior; the still-ball signal is doing real work but may be over-firing in the second half (0.494) |
+
+## Step 5 (candidates)
+
+1. **Ball-state head** — classify visible-and-controlled vs visible-but-loose, which is the evidence
+   the restart prior was standing in for.
+2. **Restart timing from ball motion onset** — find the frame the ball starts moving out of a still
+   stretch; that is the restart action, and it would place dead ball instead of boosting it.
+3. **Away-side recall** — the missing-ball frames still default to the previous team; a formation
+   head (which team's players are moving *toward* the ball) is the principled fix.
+4. **Tabular gradient boosting** on the feature matrix, only if the rules plateau.

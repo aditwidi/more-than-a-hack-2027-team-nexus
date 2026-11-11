@@ -60,6 +60,14 @@ DEFAULTS = {
     # A visible ball nobody is near: not "controlled possession" (CHALLENGE.md). Weaker than the
     # movement terms on its own -- 23.6% of dead frames vs 15.3% of live ones.
     "dead_loose": 0.8,
+    # Shaped set-piece restart prior. A tagged SET PIECES interval is dead 57.1% of the time at its
+    # start and through the set-up, against a base rate of 19.6%, so it is a strong *placement*
+    # signal: it says *when* play stopped, not just that a stoppage phase exists.
+    "dead_restart": 0.0,
+    # Stationary ball + slow players: a free kick or throw-in being set up. Measured P(dead) 0.494
+    # against a 0.196 base rate. This is the signal that was missing for the 65% of dead frames in
+    # which the ball is visible.
+    "dead_still_ball": 4.0,
     # Prior against calling dead at all. Effective playing time in professional football is roughly
     # 55-60 minutes of 90, so dead ball is ~35-40% of the match. Without this bias the decoder calls
     # ~48% dead, which also fragments possessions (dead ball breaks a possession in the metric).
@@ -102,10 +110,11 @@ DEFAULTS = {
     # Entering or leaving dead ball is cheaper: stoppages are frequent and often brief.
     "switch_penalty_dead": 2.5,
     # --- structural minimums, in frames (25 fps) -------------------------------------------
-    # A possession shorter than ~1 s is not a possession; it is flicker. CHALLENGE.md requires
-    # *controlled* possession -- the ball kept for a few seconds, or two completed passes -- and
-    # Lang et al. 2022 discard stoppages under 2 s, so 2 s is the same order of magnitude here.
-    "min_possession_frames": 50,
+    # A possession shorter than a few seconds is not a possession. CHALLENGE.md requires *controlled*
+    # possession -- the ball kept for a few seconds, or two completed passes -- and Lang et al. 2022
+    # discard stoppages under 2 s. 3 s is the same order, and it is also where the label-free
+    # structure is most plausible (398 possessions over the match, mean 8.45 s).
+    "min_possession_frames": 75,
     "min_dead_frames": 25,
 }
 
@@ -146,6 +155,12 @@ def emission_logits(X, names, params=None):
 
     if "ball_outside_pitch" in column:
         dead = dead + p["dead_out_of_play"] * (X[:, column["ball_outside_pitch"]] > 0.5)
+
+    if "dead_still_combo" in column:
+        dead = dead + p["dead_still_ball"] * X[:, column["dead_still_combo"]]
+
+    if "restart_dead" in column:
+        dead = dead + p["dead_restart"] * X[:, column["restart_dead"]]
 
     if "player_speed_mean" in column:
         reference = p["dead_speed_ref"]

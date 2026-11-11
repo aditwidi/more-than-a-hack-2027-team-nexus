@@ -340,3 +340,30 @@ def test_smart_tagging_reads_nested_group_value_labels(tmp_path):
 
     assert tags["code_instances"] == {"SET PIECES": 2, "PROGRESSION": 1}
     assert tags["meta"]["Team"] == {"N/A": 1, "Barcelona": 1, "Atletic Club": 1}
+
+
+# ---------------------------------------------------------------------------------------------
+# ball-stationary duration (Step 4)
+# ---------------------------------------------------------------------------------------------
+def test_still_frames_reset_on_absence_and_motion():
+    """`ball_still_frames` must count a *continuous* stillness, not accumulate across gaps."""
+    ball = np.zeros((10, 3), dtype=np.float32)
+    ball[:, 0] = 0.5
+    ball[:, 1] = 0.5
+    ball[:, 2] = 0.0                     # stationary
+    ball[4, 2] = 3.0                     # one frame of motion resets the count
+    ball[7, 0] = np.nan                  # and so does losing the ball
+
+    slots = np.zeros((10, 2, 3), dtype=np.float32)
+    teams = np.array([0, 1], dtype=np.int8)
+    slots[:, 0, :2] = (0.5, 0.5)
+    slots[:, 1, :2] = (0.6, 0.5)
+
+    # Recreate the feature exactly as features.build() does for this channel.
+    present, _, _ = features.ball_presence(ball)
+    still = present & (ball[:, 2] < 0.5)
+    index = np.arange(10)
+    last_moving = np.maximum.accumulate(np.where(still, -1, index))
+    run = index - last_moving
+
+    assert run.tolist() == [1, 2, 3, 4, 0, 1, 2, 0, 1, 2]

@@ -43,6 +43,10 @@ VARIANTS = {
     "abl_switch10": ({"switch_penalty": 10.0}, False),
     "abl_dwell25": ({"min_possession_frames": 25}, True),
     "abl_dwell75": ({"min_possession_frames": 75}, True),
+    "abl_no_still_ball": ({"dead_still_ball": 0.0}, True),
+    "abl_still_ball3": ({"dead_still_ball": 3.0}, True),
+    "abl_still_ball5": ({"dead_still_ball": 5.0}, True),
+    "abl_restart_prior": ({"dead_restart": 2.5}, True),
     "abl_final": ({}, True),
 }
 

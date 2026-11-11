@@ -235,3 +235,14 @@ def test_tag_possession_agrees_across_the_paired_instances(tmp_path):
     assert tags["tag_possession"][75] == pytest.approx(-1.0)    # Barcelona defending -> away has it
     # The raw tag genuinely disagrees with itself across the pair, which is the bug being avoided.
     assert tags["tag_team"][10] in (1, -1)
+
+
+def test_restart_kernel_is_dead_at_the_start_and_decays():
+    """A set-piece interval starts dead and ends live: the shape is the signal, not its presence."""
+    kernel = io._restart_kernel(np.array([-1.5, 0.0, 3.0, 4.9]), length_s=5.0)
+    assert kernel[0] == 1.0                       # before the tagged start: ball being retrieved
+    assert kernel[1] == 1.0                       # at the start: still dead
+    assert 0.0 < kernel[2] < 1.0                  # mid-interval: decaying
+    assert kernel[3] < 0.05                       # at the end: play has resumed
+    assert io._restart_kernel(np.array([5.0, 8.0]), length_s=5.0).tolist() == [0.0, 0.0]
+    assert np.all(np.diff(kernel[1:]) <= 1e-6)    # monotone, never increasing
