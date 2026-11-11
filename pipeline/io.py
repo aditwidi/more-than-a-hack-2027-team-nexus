@@ -38,6 +38,31 @@ SET_PIECE_TYPES = (
     "kick off (start)",
 )
 
+# Does a tag's "Team" mean the team *in possession*?
+#
+# +1: yes -- offensive phases, restarts, goals and post-recovery transitions are tagged with the
+#     team performing them, which is the team with the ball.
+# -1: no -- every DEFENDING code, and Defensive Transition, is tagged with the team *without* the
+#     ball, so the sign has to be inverted. Using the raw sign pushed possession the wrong way for
+#     roughly a third of the match.
+#  0: ambiguous or not about possession -- ignored.
+TAG_POSSESSION_SIGN = {
+    "BUILD UP": 1,
+    "PROGRESSION": 1,
+    "CREATING CHANCES": 1,
+    "BALL IN FINAL THIRD": 1,
+    "BALL IN THE BOX": 1,
+    "PLAYERS IN THE BOX": 1,
+    "LONG BALL": 1,
+    "GOALS": 1,
+    "ATTACKING TRANSITION": 1,
+    "SET PIECES": 1,
+    "DEFENDING IN ATTACKING THIRD": -1,
+    "DEFENDING IN MIDDLE THIRD": -1,
+    "DEFENDING IN DEFENSIVE THIRD": -1,
+    "DEFENSIVE TRANSITION": -1,
+}
+
 
 def atd_paths(data_dir=None):
     return require(["atd_meta", "atd_raw"], data_dir=data_dir)
@@ -131,15 +156,24 @@ def load_smart_tagging(path, n_frames=N_FRAMES):
     ``tag_team``       int8 -- +1 home, -1 away, 0 when the tag is N/A (all throw-ins are)
     ``code_flags``     dict of code -> bool array, one entry per Smart Tagging code
     ``code_instances`` dict of code -> number of instances in the file
+    ``tag_possession`` float32 -- signed possession prior in [-1, 1], +1 home, -1 away
     ``meta``           dict of tag group -> {value: instance count}, for verification against DATA.md
 
     Tags are nested as ``<label><group>Team</group><text>Barcelona</text></label>``, so they have to
     be read as group/value pairs; ``findtext("Team")`` returns nothing.
+
+    A phase is recorded **twice**, once with the attacking team's code and once with the defending
+    team's code over the same interval (PROGRESSION and DEFENDING IN MIDDLE THIRD have identical
+    frame counts, as do ATTACKING and DEFENSIVE TRANSITION). So a single per-frame "Team" value is
+    meaningless -- whichever instance was written last wins. ``tag_possession`` accumulates
+    ``sign(code) * team`` over both instances of the phase, which makes the pair agree, and averages.
     """
     root = ET.parse(path).getroot()
     in_sp = np.zeros(n_frames, dtype=bool)
     sp_type = np.full(n_frames, -1, dtype=np.int8)
     tag_team = np.zeros(n_frames, dtype=np.int8)
+    signed = np.zeros(n_frames, dtype=np.float32)
+    votes = np.zeros(n_frames, dtype=np.int16)
     code_flags = {}
     code_instances = {}
     meta = {}
@@ -175,6 +209,10 @@ def load_smart_tagging(path, n_frames=N_FRAMES):
         else:
             value = 0
         tag_team[first:last + 1] = value
+        sign = TAG_POSSESSION_SIGN.get(code, 0)
+        if sign and value:
+            signed[first:last + 1] += sign * value
+            votes[first:last + 1] += 1
         code_flags.setdefault(code, np.zeros(n_frames, dtype=bool))[first:last + 1] = True
         code_instances[code] = code_instances.get(code, 0) + 1
 
@@ -184,7 +222,9 @@ def load_smart_tagging(path, n_frames=N_FRAMES):
             if label in type_index:
                 sp_type[first:last + 1] = type_index[label]
 
+    tag_possession = np.where(votes > 0, signed / np.maximum(votes, 1), 0.0).astype(np.float32)
     return {"in_set_piece": in_sp, "set_piece_type": sp_type, "tag_team": tag_team,
+            "tag_possession": tag_possession,
             "code_flags": code_flags, "code_instances": code_instances, "meta": meta}
 
 

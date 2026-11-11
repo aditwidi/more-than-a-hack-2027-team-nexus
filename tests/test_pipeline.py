@@ -233,3 +233,110 @@ def test_smart_tagging_reads_nested_group_value_labels(tmp_path):
 
     assert tags["code_instances"] == {"SET PIECES": 2, "PROGRESSION": 1}
     assert tags["meta"]["Team"] == {"N/A": 1, "Barcelona": 1, "Atletic Club": 1}
+
+
+# ---------------------------------------------------------------------------------------------
+# ownership normalisation (Step 3)
+# ---------------------------------------------------------------------------------------------
+def test_top3_score_is_invariant_to_extra_far_slots():
+    """A team's ownership score must not depend on how many track slots it happens to have.
+
+    This match has 24 home slots and 22 away ones, and an unnormalised sum over slots biased the
+    decision toward home (predicted alive home share 0.71 vs a truth of 0.57).
+
+    Invariance needs at least k tracked players near the ball, which is the normal case (both teams
+    are tracked with ~11 slots); with fewer, the mean is taken over however many exist, because
+    inventing an eleventh-distance player would be worse.
+    """
+    pitch = io.PITCH
+    ball = np.array([[52.0, 34.0]])
+
+    def slot(x_m, y_m):
+        return (x_m / pitch[0], y_m / pitch[1], 0.0)
+
+    # Three home players at 1/2/3 m and three away at 10/12/15 m.
+    real = np.array([[slot(51, 34), slot(52, 36), slot(54, 33),
+                      slot(62, 34), slot(60, 40), slot(58, 28)]], dtype=np.float32)
+    teams_few = np.array([0, 0, 0, 1, 1, 1], dtype=np.int8)
+
+    # The same six players, plus five duplicated home slots ~8 m away. Duplicates are not far
+    # away in practice -- the tracker drops and re-acquires someone near the play -- so each one
+    # contributes exp(-8/4) = 0.14 to the sum and the unnormalised score drifts upward.
+    extra = np.array([[slot(60, 34)] * 5], dtype=np.float32)
+    slots_many = np.concatenate([real, extra], axis=1)
+    teams_many = np.array([0, 0, 0, 1, 1, 1] + [0] * 5, dtype=np.int8)
+
+    few = features.ownership_evidence(features.player_metres(real), teams_few, ball)
+    many = features.ownership_evidence(features.player_metres(slots_many), teams_many, ball)
+
+    assert many["score3_home"][0] == pytest.approx(few["score3_home"][0], abs=1e-4)
+    assert many["margin_top3"][0] == pytest.approx(few["margin_top3"][0], abs=1e-4)
+    # ...while the unnormalised sum does move, which is exactly the bias being removed.
+    assert many["score_margin"][0] > few["score_margin"][0] + 1e-3
+
+
+# ---------------------------------------------------------------------------------------------
+# possessions (the metric's own definition)
+# ---------------------------------------------------------------------------------------------
+def test_possessions_split_on_dead_ball_but_not_between_teams_runs():
+    labels = np.array(list("HHHHAAAADDHH"))
+    spells = diag.possessions(labels)
+    assert [(s["team"], s["length"]) for s in spells] == [("H", 4), ("A", 4), ("H", 2)]
+
+
+def test_runs_and_structure():
+    labels = np.array(list("HHDHHAA"))
+    assert [(s, e, l) for s, e, l in diag.runs(labels)] == [(0, 1, "H"), (2, 2, "D"),
+                                                            (3, 4, "H"), (5, 6, "A")]
+    stats = diag.structure(labels, 0, len(labels) - 1)
+    assert stats["possessions"] == 3
+    assert stats["transitions"] == 3                     # H->D, D->H, H->A within the window
+    assert stats["dead_share"] == pytest.approx(1 / 7, abs=1e-4)   # rounded to 4 dp by design
+    assert stats["short_possessions_lt_2s"] == 3          # all of them, at 25 fps
+
+
+# ---------------------------------------------------------------------------------------------
+# Smart Tagging
+# ---------------------------------------------------------------------------------------------
+SMART_TAGGING = """<?xml version="1.0" ?>
+<file><ALL_INSTANCES>
+  <instance>
+    <ID>1</ID><start>1.0</start><end>2.0</end><code>SET PIECES</code>
+    <label><group>Team</group><text>N/A</text></label>
+    <label><group>Type</group><text>Throw-in</text></label>
+    <label><group>Half</group><text>1st Half</text></label>
+  </instance>
+  <instance>
+    <ID>2</ID><start>2.0</start><end>2.0</end><code>SET PIECES</code>
+    <label><group>Team</group><text>Barcelona</text></label>
+    <label><group>Type</group><text>Corner Kick</text></label>
+  </instance>
+  <instance>
+    <ID>3</ID><start>3.0</start><end>4.0</end><code>PROGRESSION</code>
+    <label><group>Team</group><text>Atletic Club</text></label>
+  </instance>
+</ALL_INSTANCES></file>
+"""
+
+
+def test_smart_tagging_reads_nested_group_value_labels(tmp_path):
+    path = tmp_path / "tags.xml"
+    path.write_text(SMART_TAGGING)
+    tags = io.load_smart_tagging(str(path), n_frames=125)
+
+    # 1.0 s -> frame 25, 2.0 s -> frame 50, inclusive.
+    assert tags["in_set_piece"][25] and tags["in_set_piece"][50]
+    assert not tags["in_set_piece"][24]
+
+    corner = io.SET_PIECE_TYPES.index("corner kick")
+    throw_in = io.SET_PIECE_TYPES.index("throw-in")
+    assert tags["set_piece_type"][30] == throw_in
+    assert tags["set_piece_type"][50] == corner
+
+    # N/A must stay unknown (0) rather than defaulting to a team -- every throw-in is N/A.
+    assert tags["tag_team"][30] == 0
+    assert tags["tag_team"][50] == 1
+    assert tags["tag_team"][80] == -1
+
+    assert tags["code_instances"] == {"SET PIECES": 2, "PROGRESSION": 1}
+    assert tags["meta"]["Team"] == {"N/A": 1, "Barcelona": 1, "Atletic Club": 1}

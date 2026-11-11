@@ -197,3 +197,41 @@ def test_submission_roundtrip(tmp_path):
     assert lines[0] == "frame,label"
     assert lines[1] == "0,H"
     assert len(lines) == len(labels) + 1
+
+
+# ---------------------------------------------------------------------------------------------
+# Smart Tagging possession prior (Step 3)
+# ---------------------------------------------------------------------------------------------
+PAIRED_TAGS = """<?xml version="1.0" ?>
+<file><ALL_INSTANCES>
+  <instance>
+    <ID>1</ID><start>0.0</start><end>1.0</end><code>PROGRESSION</code>
+    <label><group>Team</group><text>Barcelona</text></label>
+  </instance>
+  <instance>
+    <ID>2</ID><start>0.0</start><end>1.0</end><code>DEFENDING IN MIDDLE THIRD</code>
+    <label><group>Team</group><text>Atletic Club</text></label>
+  </instance>
+  <instance>
+    <ID>3</ID><start>2.0</start><end>3.0</end><code>DEFENDING IN MIDDLE THIRD</code>
+    <label><group>Team</group><text>Barcelona</text></label>
+  </instance>
+</ALL_INSTANCES></file>
+"""
+
+
+def test_tag_possession_agrees_across_the_paired_instances(tmp_path):
+    """A phase is recorded twice, with opposite team tags and opposite code signs.
+
+    PROGRESSION tagged Barcelona and DEFENDING IN MIDDLE THIRD tagged Atletic describe the same
+    possession and must produce the same signed value -- the raw per-frame team tag is whichever
+    instance was written last, which is why using it directly pushed possession the wrong way.
+    """
+    path = tmp_path / "tags.xml"
+    path.write_text(PAIRED_TAGS)
+    tags = io.load_smart_tagging(str(path), n_frames=125)
+
+    assert tags["tag_possession"][10] == pytest.approx(1.0)     # both instances say: home has it
+    assert tags["tag_possession"][75] == pytest.approx(-1.0)    # Barcelona defending -> away has it
+    # The raw tag genuinely disagrees with itself across the pair, which is the bug being avoided.
+    assert tags["tag_team"][10] in (1, -1)

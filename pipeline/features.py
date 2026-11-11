@@ -37,13 +37,14 @@ from games import half_video_blocks
 # ---------------------------------------------------------------------------------------------
 TAU_M = 4.0                 # soft-nearest decay: exp(-d/tau). ~4 m is "within playing distance"
 RADII_M = (5.0, 10.0)       # "in the neighbourhood of the ball" radii
+TOP_K = 3                   # players per team for the normalised ownership score
 DISTANCE_CAP_M = 60.0       # cap for nearest-player distances, so a missing team cannot dominate
 GAP_CAP_FRAMES = 250        # 10 s: longer absences are all "very long"
 LAGS_FRAMES = (10, 25, 50, 100, 200, 400, 800, 1600)   # 0.4, 1, 2, 4, 8, 16, 32, 64 s
 ROLLING_HALVES = (25, 100, 400)                          # ±1 s, ±4 s, ±16 s
 
 # The channels that get lag/rolling treatment: the ones a decoder would actually want history for.
-LAGGED_CHANNELS = ("score_margin", "d_ratio", "ball_present", "n_diff_r5",
+LAGGED_CHANNELS = ("margin_top3", "d_ratio", "ball_present", "n_diff_r5",
                    "ball_x", "ball_y", "home_player_share")
 
 ARTIFACTS = os.path.join(io.ROOT, "artifacts")
@@ -171,6 +172,24 @@ def ownership_evidence(metres, slot_teams, ball_metres):
         out["n_away_r{}".format(int(radius))] = (distance[:, away] < radius).sum(axis=1)
         out["n_diff_r{}".format(int(radius))] = (out["n_home_r{}".format(int(radius))]
                                                 - out["n_away_r{}".format(int(radius))])
+
+    # Normalised ownership: mean weight of the k nearest players *per team*.
+    #
+    # The sum above is biased toward whichever team has more track slots -- this match has 24 home
+    # slots and 22 away ones (DATA.md), and the bias showed up as a predicted alive home share of
+    # 0.71 against a truth of 0.57. A mean over the k nearest players is invariant to how many slots
+    # a team happens to be tracked with, and it matches the "five players closest to the ball"
+    # representation that Borghesi et al. found strongest for this head.
+    for name, mask in (("home", home), ("away", away)):
+        block = distance[:, mask]
+        k = min(TOP_K, block.shape[1])
+        nearest = np.partition(block, k - 1, axis=1)[:, :k]
+        weights = np.exp(-np.where(np.isnan(nearest), np.inf, nearest) / TAU_M)
+        weights = np.where(np.isnan(weights), 0.0, weights)
+        valid = np.sum(~np.isnan(nearest), axis=1)
+        out["score3_{}".format(name)] = np.where(valid > 0, weights.sum(axis=1) / np.maximum(valid, 1), 0.0)
+
+    out["margin_top3"] = out["score3_home"] - out["score3_away"]
     return out
 
 
@@ -314,6 +333,10 @@ def build(data_dir=None, verbose=True):
     # --- tags (D3) --------------------------------------------------------------------------
     columns["in_set_piece"] = assets["in_set_piece"].astype(np.float32)
     columns["tag_team"] = assets["tag_team"].astype(np.float32)
+
+    # Signed possession prior, accumulated in the reader over both instances of each phase (the
+    # attacking team's code and the defending team's code share an interval). See io.py.
+    columns["tag_possession"] = assets["tag_possession"]
     for i, name in enumerate(io.SET_PIECE_TYPES):
         columns["sp_{}".format(name.replace(" ", "_").replace("(", "").replace(")", ""))] = (
             assets["set_piece_type"] == i).astype(np.float32)
@@ -340,7 +363,7 @@ def build(data_dir=None, verbose=True):
         for lag in LAGS_FRAMES:
             columns["{}_lag{}".format(name, lag)] = shift(base, lag)
             columns["{}_lead{}".format(name, lag)] = shift(base, -lag)
-    for name in ("score_margin", "d_ratio", "ball_present"):
+    for name in ("margin_top3", "d_ratio", "ball_present"):
         base = np.asarray(columns[name], dtype=np.float32)
         for half_window in ROLLING_HALVES:
             columns["{}_mean{}".format(name, half_window)] = rolling_mean(base, half_window)

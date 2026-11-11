@@ -33,15 +33,16 @@ from games import half_video_blocks
 VARIANTS = {
     "abl_argmax": ({"switch_penalty": 0.0, "switch_penalty_dead": 0.0}, False),
     "abl_no_context": ({"possession_weights": (1.0, 0.0, 0.0)}, False),
+    "abl_unnormalised_margin": ({"possession_margin": "score_margin"}, False),
+    "abl_no_tag": ({"tag_team": 0.0}, False),
+    "abl_raw_tag": ({"tag_feature": "tag_team", "tag_team": 0.35}, False),
     "abl_no_gate": ({"possession_gate_factor": 1.0}, False),
     "abl_no_confidence": ({"possession_confidence_s": 1e6, "possession_gate_factor": 1.0}, False),
     "abl_switch2": ({"switch_penalty": 2.0}, False),
     "abl_switch4": ({"switch_penalty": 4.0}, False),
-    "abl_switch6": ({"switch_penalty": 6.0}, False),
     "abl_switch10": ({"switch_penalty": 10.0}, False),
-    "abl_switch6_dwell50": ({"min_possession_frames": 50}, True),
-    "abl_switch6_dwell75": ({"min_possession_frames": 75}, True),
-    "abl_switch6_dead50": ({"min_dead_frames": 50}, True),
+    "abl_dwell25": ({"min_possession_frames": 25}, True),
+    "abl_dwell75": ({"min_possession_frames": 75}, True),
     "abl_final": ({}, True),
 }
 

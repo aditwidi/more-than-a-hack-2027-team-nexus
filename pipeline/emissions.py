@@ -65,14 +65,20 @@ DEFAULTS = {
     # ~48% dead, which also fragments possessions (dead ball breaks a possession in the metric).
     "dead_bias": -1.5,
     # --- possession head ------------------------------------------------------------------
-    # score_margin is sum(exp(-d/4)) home minus away. A player at 2 m contributes 0.61, at 6 m 0.22,
-    # so a margin of 1.0 is "one clear controller and nobody close". 1.8 log-odds per unit keeps
-    # this head assertive without letting one tracking glitch flip a possession on its own.
-    "possession_scale": 1.8,
+    # Ownership margin: mean exp(-d/4) over the k nearest players *per team*, so it does not depend
+    # on how many track slots a team happens to have (24 home vs 22 away in this match). Signed
+    # evidence: on live frames its sign is home 57.4% of the time against a truth of 57.3%, where
+    # the unnormalised sum said 58.4% -- the normalisation removes the bias instead of damping it.
+    # Its spread is ~0.165, so 6.0 log-odds per unit is the same effective assertiveness the
+    # unnormalised margin (std 0.571) had at 1.8.
+    "possession_scale": 6.0,
+    # Which ownership margin to use. ``margin_top3`` is the normalised one; ``score_margin`` is the
+    # unnormalised sum, kept as a fallback for feature sets built before the normalisation existed.
+    "possession_margin": "margin_top3",
     # Blend three views of the same margin: this frame, +/-1 s, +/-4 s. The instantaneous read is the
-    # noisiest number in the dataset (one duplicated track slot can dominate it), and a possession
-    # is a multi-second state, so most of the weight belongs further out.
-    # Ablation: weights (1, 0, 0) doubled the reported possessions per half.
+    # noisiest number in the dataset (one duplicated track slot can dominate it) and a possession is
+    # a multi-second state, so most of the weight belongs further out. Ablation: weights (1, 0, 0)
+    # leave 847 possessions on the match against 436 here.
     "possession_weights": (0.2, 0.4, 0.4),
     # How far an interpolated ball position can be trusted, in seconds of absence. exp(-span/scale).
     "possession_confidence_s": 2.0,
@@ -81,9 +87,13 @@ DEFAULTS = {
     # possession stays with the last team).
     "possession_distance_gate_m": 25.0,
     "possession_gate_factor": 0.35,
-    # A team tagged on a phase is a weak prior on who has the ball. Weak, because Smart Tagging is
-    # automatic, intervals are phases and not possessions, and 36 instances carry no team at all.
+    # A team tagged on a phase is a prior on who has the ball, but it has to be the *signed* prior:
+    # defending codes are tagged with the team without the ball, and each phase is recorded twice.
+    # `tag_possession` in io.py accumulates sign(code) x team over both instances. Measured on the
+    # public window: P(home | prior home) = 0.769 against a base rate of 0.573, and P(home | prior
+    # away) = 0.435 -- informative, and worth ~0.6 log-odds before any discount for being inferred.
     "tag_team": 0.35,
+    "tag_feature": "tag_possession",
     # --- decoder-adjacent priors (used by decode.py, kept here so all priors live in one place) --
     # Switching possession H<->A is the expensive event: it is what a possession *is*. 5.0 with the
     # confidence discount above yields ~200 possessions per half at ~9 s mean, inside the 8-15 s
@@ -118,7 +128,7 @@ def emission_logits(X, names, params=None):
 
     column = column_index(names)
     required = ("ball_present", "ball_gap_prev", "ball_gap_next", "in_set_piece",
-                "score_margin", "tag_team", "is_graded", "ball_fill_span", "d_home", "d_away")
+                "is_graded", "ball_fill_span", "d_home", "d_away")
     missing = [name for name in required if name not in column]
     if missing:
         raise KeyError("features are missing {}; rebuild with python -m pipeline.features"
@@ -146,16 +156,21 @@ def emission_logits(X, names, params=None):
 
     dead = dead + p["dead_bias"]
 
-    margin = X[:, column["score_margin"]].astype(np.float64)
+    margin_name = p["possession_margin"]
+    if margin_name not in column:
+        margin_name = "score_margin"          # feature set built before the normalisation
+    margin = X[:, column[margin_name]].astype(np.float64)
     w_raw, w_short, w_long = (float(w) for w in p["possession_weights"])
     total = max(w_raw + w_short + w_long, 1e-9)
-    blended = (w_raw * margin)
-    if "score_margin_mean25" in column:
-        blended = blended + w_short * X[:, column["score_margin_mean25"]]
-    if "score_margin_mean100" in column:
-        blended = blended + w_long * X[:, column["score_margin_mean100"]]
+    blended = w_raw * margin
+    for weight, suffix in ((w_short, "mean25"), (w_long, "mean100")):
+        name = "{}_{}".format(margin_name, suffix)
+        if name in column:
+            blended = blended + weight * X[:, column[name]]
     margin = blended / total
-
+    # Rescale if the fallback (unnormalised) margin is in use: it has ~3.5x the spread.
+    if margin_name != p["possession_margin"]:
+        margin = margin * 0.29
     # Discount ownership evidence where it cannot be trusted: interpolated ball positions, and a
     # ball nobody is near. Without this the decoder reports ~320 possessions per half; the same
     # evidence with the discount reports ~205, because the switch penalty can then do its job.
@@ -166,8 +181,8 @@ def emission_logits(X, names, params=None):
                                        p["possession_gate_factor"], 1.0)
     possession = p["possession_scale"] * margin * confidence
 
-    team_tag = X[:, column["tag_team"]]
-    tag = p["tag_team"] * np.sign(team_tag)
+    tag_name = p["tag_feature"] if p["tag_feature"] in column else "tag_team"
+    tag = p["tag_team"] * X[:, column[tag_name]]
 
     logits = np.empty((X.shape[0], 3), dtype=np.float32)
     logits[:, HOME] = possession + tag

@@ -163,13 +163,66 @@ baselines on 17 possessions and the *worse* of the two on the full match.
 | possession length still short | 8.1 s mean vs the 8–15 s prior, at the lower edge. More evidence, not more smoothing, is the lever — the switch penalty saturates by 8. |
 | boundary latency | mean −6.3 frames at transitions; the first frames of a possession are systematically missed. |
 
-## Step 3 (candidates)
+## Step 3 (in progress): normalise ownership, fix the tag prior
 
-1. **Normalise ownership per team** (top-3 mean instead of a sum over slots) — attacks the measured
-   home bias directly.
-2. **Restart-aware dead ball** — use the set-piece `Type` and the kickoff anchors to place dead
-   stretches, not just to add a bonus.
-3. **Ball-state head** — visible-but-uncontrolled vs visible-and-controlled, using ball speed and
-   nearest-player distance together (Peral et al. 2026 do this as a separate classification head).
-4. **Tabular gradient boosting** on the feature matrix (Lang's AdaBoost configuration) as an
-   emission model, trained on pseudo-labels — only if the rules plateau.
+### 1. Per-team top-k ownership — done
+
+`score_margin` summed `exp(-d/4)` over *every* slot, so a team with more slots won ties it should
+have lost: this match has **24 home slots and 22 away**, and a duplicated track 8 m from the play
+adds 0.14 to that team's score. Replaced with `margin_top3`, the mean weight of the **k = 3 nearest
+players per team**, which is invariant to slot count and closer to Borghesi et al.'s "five closest
+players" representation.
+
+Measured effect, on the public window as a semantics check: the *sign* of the raw margin agreed with
+the truth's home/alive share 58.4% of the time against a truth of 57.3%; the normalised one agreed
+**57.4%** of the time. Predicted alive home share fell from 0.709 to 0.638 before the tag fix below
+(and to 0.619 after), against a truth of 0.573. Possession count in the window 22 → 18.
+
+Ablation, full match: `alb_unnormalised_margin` leaves 529 possessions against 365 here.
+
+### 2. The Smart Tagging prior was inverted and overwritten — fixed
+
+Two bugs, both found by measuring the prior instead of trusting it:
+
+1. **Defending codes are tagged with the team *without* the ball** (and Defensive Transition with the
+team that just lost it), so using the raw `Team` sign pushed possession the wrong way for roughly a
+third of the match. `io.TAG_POSSESSION_SIGN` now carries a sign per code.
+2. **Each phase is recorded twice** — once with the attacking team's code, once with the defending
+team's code over the same interval (`PROGRESSION` and `DEFENDING IN MIDDLE THIRD` have identical
+frame counts, as do `ATTACKING`/`DEFENSIVE TRANSITION`). The old code assigned a per-frame team tag
+for each instance in turn, so the last instance written won: the tag was effectively random within
+a phase. `tag_possession` now accumulates `sign(code) x team` over both instances and averages.
+
+After the fix the prior is informative: **P(home | prior home) = 0.769** against a base rate of
+0.573, and P(home | prior away) = 0.435. It is applied at weight 0.35, deliberately subdominant to
+geometry — at 0.6 team accuracy on live frames fell 0.810 → 0.734 while the prior took over.
+
+### Where this leaves the pipeline
+
+| variant | macroF1 | spellF1 | possessions (truth 17) | duration (truth 14.2 s) | share err |
+|---|---|---|---|---|---|
+| `baseline_smooth50` (floor) | 0.6207 | 0.3256 | 26 | 10.8 | 0.048 |
+| `baseline_smooth125` | 0.5812 | 0.4242 | 16 | 18.5 | 0.052 |
+| `nexus_v4` (Step 2) | 0.6439 | 0.4343 | 18 | 14.5 | 0.119 |
+| **`nexus_v5` (Step 3)** | **0.6511** | **0.4471** | **17** | 15.2 | **0.047** |
+
+D-class F1 0.48 against 0.32 (smooth50) and 0.15 (smooth125). Label-free full match: 365
+possessions, mean 9.76 s, dead share 0.446, home share 0.587.
+
+### Still open
+
+| weakness | status |
+|---|---|
+| `D` recall ≈ 0.41 with a visible ball | restart timing (throw-in / free kick) is not yet used as *placement*, only as a bonus |
+| `A` recall 0.65 vs the baseline's 0.77 | away possessions with a missing ball are still absorbed into the previous state |
+| boundary latency −2.8 frames (window) | improved from −6.3, still early |
+| home share 0.619 vs 0.573 (window) | 0.587 label-free; within the noise of a 5-minute sample, but worth watching |
+
+## Step 4 (candidates)
+
+1. **Restart-aware dead ball** — place dead stretches at the set-piece `Type` and kickoff anchors
+   instead of only adding a log-odds bonus.
+2. **Ball-state head** — visible-but-uncontrolled vs visible-and-controlled (Peral et al. 2026 treat
+   this as its own classification), which is the remaining `D` recall gap.
+3. **Tabular gradient boosting** on the feature matrix (Lang's AdaBoost configuration) as an emission
+   model, trained on pseudo-labels — only if the rules plateau.
