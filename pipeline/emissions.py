@@ -29,10 +29,13 @@ HOME, AWAY, DEAD = 0, 1, 2
 
 DEFAULTS = {
     # --- dead-ball head -------------------------------------------------------------------
-    # A second of ball absence is worth this much log-odds of "dead". 0.55/s with a 8 s cap means
-    # an 8 s absence saturates at +4.4, which outweighs almost any evidence of play -- and it
-    # should: eight seconds without a tracked ball is a stoppage far more often than not.
-    "dead_per_second": 0.55,
+    # A second of ball absence is worth this much log-odds of "dead". Recalibrated from 0.55: the
+    # ground truth is derived from *corrected* tracking, which knows the ball is in play while ours
+    # has lost it, so a long absence is evidence but not proof. Measured on the public window, 391
+    # alive frames had a median ball gap of 5.6 s, and the old weight called 98.7% of them dead.
+    # Lowering to 0.40 with a smaller long-gap bonus raised D precision 0.69 -> 0.75 with recall
+    # unchanged -- fewer false stoppages, not fewer real ones.
+    "dead_per_second": 0.40,
     "dead_gap_cap_s": 8.0,
     # Half a second back from the edge of a gap: the frames just before the ball is seen again are
     # usually still live (a pass arriving), so the gap-length term alone should not pin them down.
@@ -44,7 +47,7 @@ DEFAULTS = {
     "live_ball": -0.8,
     # "The frame the tracking marks the ball dead" is what the ground truth is derived from, so a
     # long absence is the single most reliable signal. Nothing else gets this weight.
-    "dead_long_gap_bonus": 1.2,
+    "dead_long_gap_bonus": 0.8,
     "dead_long_gap_s": 3.0,
     # Ball beyond the touchline or goal line: out of play by definition. Measured on the public
     # window, 27.6% of dead frames and 0.0% of live frames carry it, so it is nearly pure evidence
@@ -88,13 +91,25 @@ DEFAULTS = {
     # a multi-second state, so most of the weight belongs further out. Ablation: weights (1, 0, 0)
     # leave 847 possessions on the match against 436 here.
     "possession_weights": (0.2, 0.4, 0.4),
-    # How far an interpolated ball position can be trusted, in seconds of absence. exp(-span/scale).
-    "possession_confidence_s": 2.0,
+    # How far an interpolated ball position can be trusted, in seconds of absence: exp(-span/scale).
+    # Now DISABLED (0.0). It was introduced when the interpolated ball was the only read on a missing
+    # ball; with the formation fallback below it is strictly harmful -- turning it off raised team
+    # accuracy 0.817 -> 0.835, away recall 0.765 -> 0.807 and cut share error to 0.002, with the
+    # label-free structure unchanged (418 vs 422 possessions, 8.32 vs 8.28 s). Kept as a knob
+    # because the ablation in docs/pipeline.md reports it.
+    "possession_confidence_s": 0.0,
     # A ball further than this from every tracked player is loose or in the air: ownership evidence
     # there is weak, so it is discounted rather than believed (CHALLENGE.md: in contested phases
     # possession stays with the last team).
+    # Formation fallback for frames with no ball, and it enters with a NEGATIVE weight: the closer
+    # centroid belongs to the *defending* team, which is compact around the ball while the team in
+    # possession spreads. Measured on the public window, ball-absent frames whose home centroid was
+    # nearer the ball were away possessions 384 out of 384 times. Adding it flipped A recall
+    # 0.756 -> 0.765 at -0.10 and 0.809 at -0.25; -0.10 is used because it also shortens the
+    # boundary latency (mean -6.6 -> -1.1 frames) without inflating the possession count.
+    "shape_scale": -0.10,
     "possession_distance_gate_m": 25.0,
-    "possession_gate_factor": 0.35,
+    "possession_gate_factor": 1.0,
     # A team tagged on a phase is a prior on who has the ball, but it has to be the *signed* prior:
     # defending codes are tagged with the team without the ball, and each phase is recorded twice.
     # `tag_possession` in io.py accumulates sign(code) x team over both instances. Measured on the
@@ -114,6 +129,9 @@ DEFAULTS = {
     # possession -- the ball kept for a few seconds, or two completed passes -- and Lang et al. 2022
     # discard stoppages under 2 s. 3 s is the same order, and it is also where the label-free
     # structure is most plausible (398 possessions over the match, mean 8.45 s).
+    # Boundary refinement half-window, in frames. Viterbi optimises the smoothed emission; this
+    # re-places each edge where the instantaneous evidence changes, which is what IoU measures.
+    "boundary_refine_frames": 0,
     "min_possession_frames": 75,
     "min_dead_frames": 25,
 }
@@ -190,11 +208,20 @@ def emission_logits(X, names, params=None):
     # ball nobody is near. Without this the decoder reports ~320 possessions per half; the same
     # evidence with the discount reports ~205, because the switch penalty can then do its job.
     span_seconds = X[:, column["ball_fill_span"]] / float(io.FPS)
-    confidence = np.exp(-span_seconds / p["possession_confidence_s"])
+    if p["possession_confidence_s"] > 0:
+        confidence = np.exp(-span_seconds / p["possession_confidence_s"])
+    else:
+        confidence = np.ones_like(span_seconds, dtype=np.float64)
     nearest = np.minimum(X[:, column["d_home"]], X[:, column["d_away"]])
-    confidence = confidence * np.where(nearest > p["possession_distance_gate_m"],
-                                       p["possession_gate_factor"], 1.0)
+    if p["possession_gate_factor"] != 1.0:
+        confidence = confidence * np.where(nearest > p["possession_distance_gate_m"],
+                                           p["possession_gate_factor"], 1.0)
     possession = p["possession_scale"] * margin * confidence
+    if "shape_margin" in column:
+        # Gated on the ball being *absent*, not on low confidence: the centroid signal inverts when
+        # the ball is visible (the defending team is compact around it), so it must only ever speak
+        # for frames where there is no ball to see.
+        possession = possession + p["shape_scale"] * X[:, column["shape_margin"]] * (~present)
 
     tag_name = p["tag_feature"] if p["tag_feature"] in column else "tag_team"
     tag = p["tag_team"] * X[:, column[tag_name]]

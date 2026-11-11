@@ -224,6 +224,13 @@ def team_shape(metres, slot_teams, ball_metres):
         grad_y = centroid[:, 1] - ball_metres[:, 1]
         out["d_centroid_{}".format(name)] = np.sqrt(grad_x * grad_x + grad_y * grad_y)
 
+    # Formation as a fallback ownership signal, in metres: positive = home centroid closer to the
+    # ball. Measured on alive frames where the ball is MISSING, this is nearly pure evidence
+    # (384/384 frames with an away-closer centroid were away possessions), and on frames where the
+    # ball is visible it *inverts* -- the defending team is compact around the ball while the
+    # attacking team spreads -- so the emission gates it to unreliable-ball frames only.
+    out["shape_margin"] = (out["d_centroid_away"] - out["d_centroid_home"]).astype(np.float32)
+
     total = out["n_home_tracks"] + out["n_away_tracks"]
     out["home_player_share"] = np.where(total > 0, out["n_home_tracks"] / np.maximum(total, 1), 0.5)
     return out

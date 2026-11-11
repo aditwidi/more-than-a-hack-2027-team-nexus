@@ -160,6 +160,7 @@ def decode(X, names, params=None, use_cleanup=True):
     states = viterbi(logits, p)
     if use_cleanup:
         states = cleanup(states, p)
+        states = refine_boundaries(states, logits, p)
 
     labels = LABELS[states].astype("<U1")
 
@@ -179,3 +180,67 @@ def write_submission(path, labels):
         handle.write("frame,label\n")
         handle.writelines("{},{}\n".format(frame, label) for frame, label in enumerate(labels))
     return path
+
+
+# ---------------------------------------------------------------------------------------------
+# Boundary refinement
+# ---------------------------------------------------------------------------------------------
+def refine_boundaries(states, logits, params):
+    """Re-place each transition at the frame where the evidence actually changes.
+
+    The Viterbi path is optimal for the *smoothed* emissions, and the possession head deliberately
+    averages the ownership margin over +/-4 s (a possession is a multi-second state, and the
+    instantaneous read is the noisiest number in the dataset). That smoothing is right for deciding
+    *that* a possession changed and *roughly where*, and wrong for deciding *exactly where*: it
+    smears the boundary by seconds, which is directly what `spellF1` measures at IoU 0.5-0.7.
+
+    So: keep the structure, re-place the edges. For a transition a -> b, scan a window around the
+    decoded boundary and pick the frame maximising the standard change-point statistic
+
+        mean(logit_b - logit_a after f)  -  mean(logit_b - logit_a before f)
+
+    which is the maximum-likelihood split of the window under a two-level mean. Both sides are kept
+    at least ``min_dwell`` long, so refinement cannot invent a possession the cleanup just removed.
+    """
+    window = int(params.get("boundary_refine_frames", 0))
+    if window <= 0 or len(states) < 3 * window:
+        return states
+
+    states = states.copy()
+    min_dwell = minimum_dwell(params)
+    targets = [start for start, _end, _state in runs(states)[1:]]
+
+    for target in targets:
+        spans = runs(states)
+        # Locate the transition this target refers to now; earlier refinements may have moved it.
+        index = None
+        for i in range(1, len(spans)):
+            if abs(spans[i][0] - target) <= 2 * window:
+                index = i
+                break
+        if index is None:
+            continue
+
+        boundary, end, incoming = spans[index]
+        left_end, left_state = spans[index - 1][1], spans[index - 1][2]
+
+        low = max(boundary - window, left_end - min_dwell[left_state] + 1, 1)
+        high = min(boundary + window, end - min_dwell[incoming] + 1, len(states) - 1)
+        if high - low < 2:
+            continue
+
+        difference = logits[low:high + 1, incoming] - logits[low:high + 1, left_state]
+        cumulative = np.concatenate(([0.0], np.cumsum(difference)))
+        offsets = np.arange(1, high - low)
+
+        before = cumulative[offsets] / offsets
+        after = (cumulative[-1] - cumulative[offsets]) / (len(difference) - offsets)
+        best = int(offsets[np.argmax(after - before)]) + low
+
+        if best == boundary:
+            continue
+        if best > boundary:
+            states[boundary:best] = incoming
+        else:
+            states[best:boundary] = left_state
+    return states

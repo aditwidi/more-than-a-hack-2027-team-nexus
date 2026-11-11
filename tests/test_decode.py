@@ -246,3 +246,47 @@ def test_restart_kernel_is_dead_at_the_start_and_decays():
     assert kernel[3] < 0.05                       # at the end: play has resumed
     assert io._restart_kernel(np.array([5.0, 8.0]), length_s=5.0).tolist() == [0.0, 0.0]
     assert np.all(np.diff(kernel[1:]) <= 1e-6)    # monotone, never increasing
+
+
+def test_shape_fallback_enters_with_inverted_sign_and_only_without_the_ball():
+    """The closer centroid belongs to the *defending* team, so the term must be negative.
+
+    Measured on the public window: on ball-absent frames whose home centroid was nearer, the truth
+    was an away possession 384 times out of 384. And with the ball visible the relationship inverts
+    again (the defending team is compact), so the term must only fire when there is no ball.
+    """
+    names = ["ball_present", "ball_gap_prev", "ball_gap_next", "ball_fill_span",
+             "in_set_piece", "tag_team", "is_graded", "d_home", "d_away",
+             "ball_outside_pitch", "player_speed_mean", "player_speed_share_moving",
+             "ball_loose", "shape_margin", "margin_top3"]
+    X = np.zeros((10, len(names)), dtype=np.float32)
+    column = {name: j for j, name in enumerate(names)}
+    X[:, column["is_graded"]] = 1.0
+    X[:, column["d_home"]] = X[:, column["d_away"]] = 5.0
+    X[:, column["player_speed_mean"]] = 2.5
+
+    # Ball absent, home centroid 20 m closer to the ball than away's.
+    X[:, column["ball_present"]] = 0.0
+    X[:, column["ball_gap_prev"]] = X[:, column["ball_gap_next"]] = 50
+    X[:, column["shape_margin"]] = 20.0            # positive = home centroid nearer
+
+    logits = emissions.emission_logits(X, names)
+    assert logits[:, emissions.HOME].mean() < logits[:, emissions.AWAY].mean()
+
+    # With the ball visible the term must not speak at all: same features, ball present.
+    X[:, column["ball_present"]] = 1.0
+    X[:, column["ball_gap_prev"]] = X[:, column["ball_gap_next"]] = 0
+    visible = emissions.emission_logits(X, names)
+    X[:, column["shape_margin"]] = 0.0
+    neutral = emissions.emission_logits(X, names)
+    assert np.allclose(visible[:, emissions.HOME], neutral[:, emissions.HOME], atol=1e-5)
+
+
+def test_long_ball_absence_is_evidence_but_not_proof():
+    """Recalibrated: 391 alive frames in the public window had a median 5.6 s ball gap."""
+    p = dict(emissions.DEFAULTS)
+    X, names = make_features(ball_present=0.0, ball_gap_prev=140, ball_gap_next=140,
+                             player_speed_mean=2.6, player_speed_share_moving=0.4)
+    logits = emissions.emission_logits(X, names, p)
+    # A 5.6 s absence must not on its own outweigh every live-play signal.
+    assert logits[:, emissions.DEAD].mean() < 5.0

@@ -282,12 +282,97 @@ share 0.581.
 | boundary latency −3 to −7 frames | transitions are placed slightly early; a restart-timing signal would fix both this and the rejected restart prior |
 | dead share 0.476 | above the 35–40% football prior; the still-ball signal is doing real work but may be over-firing in the second half (0.494) |
 
-## Step 5 (candidates)
+## Step 5: recalibrated dead head, formation fallback, discounts removed
 
-1. **Ball-state head** — classify visible-and-controlled vs visible-but-loose, which is the evidence
-   the restart prior was standing in for.
-2. **Restart timing from ball motion onset** — find the frame the ball starts moving out of a still
-   stretch; that is the restart action, and it would place dead ball instead of boosting it.
-3. **Away-side recall** — the missing-ball frames still default to the previous team; a formation
-   head (which team's players are moving *toward* the ball) is the principled fix.
-4. **Tabular gradient boosting** on the feature matrix, only if the rules plateau.
+### 1. The gap→dead weight was too strong
+
+The ground truth is derived from **corrected** tracking, which knows the ball is in play while ours
+has lost it. Measured on the public window: 391 truth-alive frames had a **median ball gap of 5.6 s**,
+and the old weight called 98.7% of them dead. Lowering `dead_per_second` 0.55 → 0.40 and the long-gap
+bonus 1.2 → 0.8 raised **D precision 0.69 → 0.75 with recall unchanged** — fewer false stoppages, not
+fewer real ones.
+
+### 2. Formation fallback, entering with an inverted sign
+
+The one population the model could not reach was missing-ball frames. The team **centroid** solves
+it — but not in the direction you would guess. On ball-absent frames in the public window, the team
+whose centroid was *nearer* the ball was the **defending** team 384 times out of 384: the side out of
+possession is compact around the ball while the side in possession spreads. And with the ball
+visible the relation flips again (it inverts), so the term is gated on `ball_present == 0`.
+
+Adding it with the natural sign *hurt* (A recall 0.756 → 0.721). With the sign corrected:
+
+| `shape_scale` | A recall | team accuracy | boundary latency |
+|---|---|---|---|
+| 0.0 | 0.756 | 0.813 | −6.6 frames |
+| −0.10 | 0.765 | 0.817 | **−1.1 frames** |
+| −0.25 | 0.809 | 0.836 | −4.3 frames |
+
+−0.10 is used: it gains recall and improves boundary placement sharply without inflating the
+possession count the way −0.25 does.
+
+### 3. The interpolation discount was made obsolete by #2
+
+`possession_confidence_s` (discounting ownership evidence by `exp(-span/2 s)`) was introduced in
+Step 2 when the interpolated ball was the only read on a missing ball. With the formation fallback
+in place it is strictly harmful, and it is now **off** (`0.0`, gate factor `1.0`): team accuracy
+0.817 → 0.835, A recall 0.765 → 0.807, share error 0.011 → 0.002, label-free structure unchanged
+(418 vs 422 possessions). It stays as a documented knob because the ablation reports it.
+
+### 4. Boundary refinement: measured, neutral, left off
+
+`refine_boundaries()` re-places each transition at the maximum-likelihood change point of the
+instantaneous logits. Structure is unchanged at ±25/50/75/100 frames (418 possessions in every
+case); it moved 40 frames and nothing else. Kept in the code, tested, **default 0** — shipping a
+mechanism that claims to help and measurably does not would be worse than shipping nothing.
+
+### 5. A measurement warning worth recording
+
+`abl_no_confidence` and `abl_final` are now the **same configuration**: the discount is off by
+default, and the ablation sets it to `1e6`, which is `exp(-span/1e6) ≈ 0.99999` rather than exactly
+1.0. That 1e-5 difference is enough to break ties differently in the Viterbi argmax: **568 frames
+change, and the public spellF1 moves 0.4800 → 0.4947**. So a difference of 0.015 here is numerical,
+not modelling. It is a concrete instance of the warning in `EVALUATION.md`: on a 17-possession
+window, treat anything under ~0.04 as noise, and do not read the third decimal place at all.
+
+### Result
+
+| submission | macroF1 | spellF1 | possessions (truth 17) | duration (truth 14.2 s) | share err | D F1 |
+|---|---|---|---|---|---|---|
+| `baseline_smooth50` (floor) | 0.6207 | 0.3256 | 26 | 10.8 | 0.048 | 0.32 |
+| `baseline_smooth125` | 0.5812 | 0.4242 | 16 | 18.5 | 0.052 | 0.15 |
+| Step 4 | 0.7335 | 0.4571 | 18 | 13.8 | 0.024 | 0.68 |
+| **Step 5** | **0.7666** | **0.4800** | 18 | 14.3 | **0.002** | **0.69** |
+
+Predicted home share of live play **0.574 against a truth of 0.573**; per-class F1 H 0.825 / A 0.781 /
+D 0.694; boundary latency −1.1 frames; fragmentation 1.29. Label-free full match: 418 possessions
+(195 / 223 per half), mean 8.32 s, dead 0.457, home share 0.569.
+
+Still losing: 10 spurious and 9 missed possessions at IoU 0.5, and only 5 of 20 true transitions are
+matched within ±25 frames — the remaining gap is in deciding *which* transitions exist, not where
+they sit.
+
+### Ablation summary (label-free, full match)
+
+| variant | possessions | mean s | dead |
+|---|---|---|---|
+| argmax, no decoder | 760 | 4.54 | 0.457 |
+| no multi-scale context | 721 | 4.83 | 0.453 |
+| unnormalised margin | 591 | 5.71 | 0.468 |
+| raw (unsigned) tag prior | 519 | 6.60 | 0.461 |
+| no tag prior | 481 | 7.08 | 0.464 |
+| switch penalty 2 / 4 / **6** / 10 | 492 / 454 / **421** / 421 | 7.06 / 7.64 / **8.23** / 8.23 | 0.456 |
+| no still-ball duration | 383 | 9.61 | 0.427 |
+| restart prior at weight 2.5 (rejected) | 408 | 7.61 | 0.516 |
+| **final** | **418** | **8.32** | **0.457** |
+
+## Step 6 (candidates)
+
+1. **Transition existence** — 5 of 20 true transitions matched. The decoder still invents transitions
+   inside possessions; a duration-aware model (HSMM instead of a constant switch penalty) is the
+   principled fix.
+2. **Restart timing from ball-motion onset** — the frame a stationary ball starts moving is the
+   restart action; that would place dead ball instead of boosting it (Step 4's negative result) and
+   would fix the remaining boundary error.
+3. **Tabular gradient boosting** on the feature matrix, trained on pseudo-labels, using the same
+   features — the only remaining route that could beat hand-set priors.
