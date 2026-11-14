@@ -437,6 +437,43 @@ Both tools only *report*; neither writes a submission, and no constant in `pipel
 came from a frame we looked at — the two that came from measurement came from aggregate rates over
 hundreds of frames (the dead-gap weight and the centroid sign), documented in Step 5.
 
+## Step 7: what the video check found, and what it fixed
+
+The visual verification paid for itself immediately. Rendering the longest disagreement with the
+ground truth (`frames 18127..18362`, 9.4 s where the truth says dead and we said home) showed a
+restart being set up: the ball visible and **stationary for 8 s**, one player beside it, everyone
+else jogging into position, the `SET PIECE` flag on. Our dead head had no term for exactly that
+combination — "ball visible, stationary, and inside a set piece" — because its stillness term needs
+*slow players* and these players are jogging at 1–3 m/s.
+
+Measured before touching the model: inside a set-piece interval with a visible ball stationary for
+more than 4 s, **P(dead) = 0.830**, against 0.561 for a set piece alone and 0.140 for stillness
+alone. A restart cannot get underway while the ball is not moving, so this is a football rule, not a
+patch for one incident.
+
+| `dead_set_piece_still` | D precision | D recall | D F1 | possessions | mean s | macroF1 | spellF1 |
+|---|---|---|---|---|---|---|---|
+| 0.0 | 0.836 | 0.594 | 0.694 | 18 | 14.3 | 0.7666 | 0.4800 |
+| **2.0** | **0.840** | **0.754** | **0.795** | **17** | 14.5 | **0.8073** | **0.4941** |
+| 3.5 | 0.840 | 0.754 | 0.795 | 17 | 14.5 | 0.8073 | 0.4941 |
+
+Saturates at 2.0. Both metrics improve, and the possession count now equals the truth's 17 — the
+first configuration to do so without being tuned towards it.
+
+Two other candidates from the same investigation were **rejected on measurement**: "set piece and a
+still ball" without the 4 s threshold (P(dead) 0.597, too weak), and an "isolated ball" signature
+(ball seen, ≤1 player within 5 m, still) which scored P(dead) 0.195.
+
+### Current result
+
+| submission | macroF1 | spellF1 | possessions (truth 17) | duration (truth 14.2 s) | share err | D F1 |
+|---|---|---|---|---|---|---|
+| `baseline_smooth50` (floor) | 0.6207 | 0.3256 | 26 | 10.8 | 0.048 | 0.32 |
+| Step 5 | 0.7666 | 0.4800 | 18 | 14.3 | 0.002 | 0.694 |
+| **Step 7** | **0.8073** | **0.4941** | **17** | 14.5 | 0.017 | **0.795** |
+
+Per-class F1 H 0.846 / A 0.781 / D 0.795; boundary latency −2.7 frames; fragmentation 1.19.
+
 ## Step 6: two more ideas tested, both rejected on measurement
 
 ### 1. Team spread — predictive, but it costs the ranking metric

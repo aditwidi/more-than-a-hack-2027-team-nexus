@@ -71,6 +71,10 @@ DEFAULTS = {
     # against a 0.196 base rate. This is the signal that was missing for the 65% of dead frames in
     # which the ball is visible.
     "dead_still_ball": 4.0,
+    # Set piece with a ball that has not moved for 4 s: P(dead) 0.830 against a 0.196 base, and the
+    # restart cannot be underway with a stationary ball -- this is the evidence the earlier blanket
+    # restart prior lacked.
+    "dead_set_piece_still": 2.0,
     # Prior against calling dead at all. Effective playing time in professional football is roughly
     # 55-60 minutes of 90, so dead ball is ~35-40% of the match. Without this bias the decoder calls
     # ~48% dead, which also fragments possessions (dead ball breaks a possession in the metric).
@@ -176,6 +180,9 @@ def emission_logits(X, names, params=None):
 
     if "ball_outside_pitch" in column:
         dead = dead + p["dead_out_of_play"] * (X[:, column["ball_outside_pitch"]] > 0.5)
+
+    if "set_piece_still" in column:
+        dead = dead + p["dead_set_piece_still"] * X[:, column["set_piece_still"]]
 
     if "dead_still_combo" in column:
         dead = dead + p["dead_still_ball"] * X[:, column["dead_still_combo"]]

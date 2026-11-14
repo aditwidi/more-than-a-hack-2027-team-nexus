@@ -364,6 +364,13 @@ def build(data_dir=None, verbose=True):
     # Signed possession prior, accumulated in the reader over both instances of each phase (the
     # attacking team's code and the defending team's code share an interval). See io.py.
     columns["tag_possession"] = assets["tag_possession"]
+
+    # A restart that has not moved for 4+ seconds is a stoppage being set up. Measured on the public
+    # window: inside a set-piece interval with a visible ball still for >4 s, P(dead) = 0.830 -- far
+    # more precise than either condition alone (set piece 0.561, still alone 0.140).
+    columns["set_piece_still"] = ((columns["in_set_piece"] > 0.5) &
+                                  (columns["ball_still_frames"] > 4.0 * io.FPS)).astype(np.float32)
+
     # Shaped dead-ball prior around set-piece restarts (see io.py for the shape and why).
     columns["restart_dead"] = np.asarray(assets["restart_dead"], dtype=np.float32)
     for i, name in enumerate(io.SET_PIECE_TYPES):
