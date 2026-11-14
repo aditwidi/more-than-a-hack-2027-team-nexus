@@ -231,6 +231,12 @@ def team_shape(metres, slot_teams, ball_metres):
     # attacking team spreads -- so the emission gates it to unreliable-ball frames only.
     out["shape_margin"] = (out["d_centroid_away"] - out["d_centroid_home"]).astype(np.float32)
 
+    # Team spread: the team in possession spreads to create space, the team defending stays compact.
+    # Measured on the public window with the same sign in both populations -- home more spread gives
+    # P(home) = 0.840 against a 0.612 base when the ball is visible, and 0.200 against 0.013 when it
+    # is not -- so unlike shape_margin this needs no gate.
+    out["spread_margin"] = (out["home_spread"] - out["away_spread"]).astype(np.float32)
+
     total = out["n_home_tracks"] + out["n_away_tracks"]
     out["home_player_share"] = np.where(total > 0, out["n_home_tracks"] / np.maximum(total, 1), 0.5)
     return out

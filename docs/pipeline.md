@@ -366,13 +366,56 @@ they sit.
 | restart prior at weight 2.5 (rejected) | 408 | 7.61 | 0.516 |
 | **final** | **418** | **8.32** | **0.457** |
 
-## Step 6 (candidates)
+## Step 6: two more ideas tested, both rejected on measurement
 
-1. **Transition existence** — 5 of 20 true transitions matched. The decoder still invents transitions
-   inside possessions; a duration-aware model (HSMM instead of a constant switch penalty) is the
-   principled fix.
-2. **Restart timing from ball-motion onset** — the frame a stationary ball starts moving is the
-   restart action; that would place dead ball instead of boosting it (Step 4's negative result) and
-   would fix the remaining boundary error.
-3. **Tabular gradient boosting** on the feature matrix, trained on pseudo-labels, using the same
-   features — the only remaining route that could beat hand-set priors.
+### 1. Team spread — predictive, but it costs the ranking metric
+
+The team in possession spreads out; the team defending stays compact. Measured on the public window:
+
+| population | home more spread | away more spread | base rate |
+|---|---|---|---|
+| ball visible | **P(home) = 0.840** | 0.074 | 0.612 |
+| ball absent | P(home) = 0.200 | 0.000 | 0.013 |
+
+Same sign in both populations, so no gating is needed. Added as an additive logit it does what a
+strong feature is supposed to do per frame — team accuracy on live frames rises 0.835 → 0.859,
+macroF1 0.7666 → 0.7856 — and then it **wrecks the ranking metric**:
+
+| `spread_scale` | possessions (truth 17) | mean duration | macroF1 | spellF1 |
+|---|---|---|---|---|
+| 0.0 | 18 | 14.3 s | 0.7666 | **0.4800** |
+| 0.1 | 16 | 16.2 s | 0.7668 | 0.4970 |
+| 0.5 | 15 | 17.3 s | 0.7597 | 0.3750 |
+| 1.0 | 12 | 21.8 s | 0.7811 | 0.4000 |
+| 1.5 | 8 | 33.1 s | 0.7856 | 0.4320 |
+
+The mechanism is plain: a strongly-weighted term makes the decoder confident, so it stops switching
+and merges possessions. Non-monotonic in `spellF1` and inside the noise band at low weight, so the
+default stays **0.0**. This is the challenge's own thesis — no per-frame metric can represent
+possession — reproduced inside our pipeline by accident.
+
+Also tested and dropped: number of each team's players ahead of the ball in its attacking direction
+(P(home) 0.558 at threshold −0.15 against a 0.573 base — no signal).
+
+### 2. A learned emission combined with the rules — generalises, still loses
+
+`pipeline/learn.py`: a histogram gradient-boosted classifier trained on our own pseudo-labels,
+**out-of-fold by half** so training and prediction never see the same half, mixed with the rule
+emission at weight `alpha` and decoded by the same Viterbi + cleanup.
+
+- Out-of-fold agreement with the teacher: **92.8%** — the features do generalise across halves, which
+  is a good independent check on the feature set.
+- Every mixture degraded the ranking metric: `spellF1` 0.4800 (rules) → 0.4000 at alpha 0.2, 0.35,
+  0.5 and 1.0 alike; macroF1 0.7666 → 0.747–0.761.
+
+A student of our own output learns the teacher's *per-frame* decisions without its structural
+decoding, so it reintroduces the flicker the decoder exists to remove. This is the error-propagation
+failure the self-training literature predicts, reproduced in one afternoon.
+
+### Where that leaves the headroom
+
+Feature engineering is exhausted on this data (three candidate signals tested, none helped the
+ranking metric), and learning from pseudo-labels cannot exceed its teacher. What is left is
+**sequence structure**: the decoder still gets 5 of 20 true transitions right within ±25 frames, and a
+hidden semi-Markov model with explicit per-state durations is the instrument for that — the one thing
+the literature recommends and we have not built.

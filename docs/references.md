@@ -200,7 +200,6 @@ nothing in this note depends on it. Treat as a lead for a future iteration, not 
 ---
 
 ## 6b. Empirical findings from this dataset (verified locally, not from the literature)
-
 Measured with `pipeline/diag.py` and the public window. These are *our* numbers and are the ones the
 design actually leans on; they are tagged `[verified locally]` throughout §10.
 
@@ -214,6 +213,39 @@ design actually leans on; they are tagged `[verified locally]` throughout §10.
 | Track slots | 24 home / 22 away in the metadata | a sum over slots biases ownership toward home; predicted alive home share ran 0.71 vs truth 0.57 |
 
 
+
+## 6c. Second research pass: duration models and hybrid/learned combinations
+
+Asked whether a learned or combined model could beat the hand-set priors, we searched again. The
+answer the literature gives is consistent and narrow:
+
+| source | finding | what it implies for us |
+|---|---|---|
+| Semi-Markov models of football sequences (Sci Rep 2026, [s41598-026-52938-1](https://www.nature.com/articles/s41598-026-52938-1)) | duration-aware state models beat memoryless baselines because sports states are not memoryless | the constant switch penalty is the wrong shape in principle; an HSMM is the correct instrument |
+| Hybrid rules + ML descriptions of production pipelines ([DataField](https://datafield.dev/professional-soccer-analytics/part-04/chapter-23/), [PLOS ONE 2023](https://journals.plos.org/plosone/article?id=10.1371%2Fjournal.pone.0298107)) | rules handle explicit, well-defined events (>90% for set pieces in one tracking study); ML handles ambiguous classification; post-processing adds smoothing and consistency | our architecture already matches this shape |
+| Self-training / pseudo-labelling for scarce labels (ECCV 2024, [pdf](https://www.ecva.net/papers/eccv_2024/papers_ECCV/papers/01205.pdf)) | reduces annotation need but **propagates the teacher's errors** | a student of our own output cannot add information the rules do not already encode |
+| SoccerNet Game State Reconstruction 2025 ([baseline](https://www.soccer-net.org/tasks/game-state-reconstruction), [CVPRW 2025 winner](https://openaccess.thecvf.com/content/CVPR2025W/CVSPORTS/papers/Golovkin_From_Broadcast_to_Minimap_Achieving_State-of-the-Art_SoccerNet_Game_State_Reconstruction_CVPRW_2025_paper.pdf)) | predicts positions, roles, team affiliation, jersey numbers — **not possession** | no public model to borrow; team assignment is a different task |
+| Tracking + detection pipelines ([IJICIC](http://www.ijicic.org/ijicic-220107.pdf)) | YOLOv8 + ByteTrack for continuous trajectories | the video route, already ruled out on budget |
+
+Two claims were then tested on this data rather than assumed, and both failed to improve the ranking
+metric (details and numbers in [pipeline.md](pipeline.md), Step 6):
+
+1. **A strongly predictive feature can still be harmful.** Team spread separates possession at
+   0.840 vs a 0.612 base (visible ball) with the same sign when the ball is absent, so it is genuine
+   evidence — but adding it as an additive logit makes the decoder confident enough to stop
+   switching, collapsing the possession count from 18 to 8 in the public window while *raising*
+   macroF1. A textbook instance of the per-frame / possession-level disagreement the challenge is
+   built on.
+2. **Self-training cannot beat its teacher.** A gradient-boosted emission trained on our own
+   pseudo-labels generalises across halves (92.8% out-of-fold agreement, so the features do
+   generalise) yet every mixture weight degraded `spellF1` (0.4800 → 0.4000). It learns the
+   teacher's per-frame decisions without its structural decoding — exactly the error propagation the
+   literature warns about.
+
+**Conclusion of the second pass:** the remaining headroom is in *sequence structure*, not in feature
+engineering or in a learned classifier. The specific instrument the literature points to that we have
+not built is a hidden semi-Markov decoder with explicit per-state duration distributions, replacing
+the constant switch penalty plus minimum-dwell cleanup.
 
 ## 7. What the literature does *not* solve for this competition
 

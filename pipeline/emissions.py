@@ -108,6 +108,9 @@ DEFAULTS = {
     # 0.756 -> 0.765 at -0.10 and 0.809 at -0.25; -0.10 is used because it also shortens the
     # boundary latency (mean -6.6 -> -1.1 frames) without inflating the possession count.
     "shape_scale": -0.10,
+    # Team spread margin (home minus away, in metres, ~10 m std): the side in possession is the
+    # spread-out one. Same sign with and without a visible ball, so it is not gated.
+    "spread_scale": 0.0,
     "possession_distance_gate_m": 25.0,
     "possession_gate_factor": 1.0,
     # A team tagged on a phase is a prior on who has the ball, but it has to be the *signed* prior:
@@ -217,6 +220,8 @@ def emission_logits(X, names, params=None):
         confidence = confidence * np.where(nearest > p["possession_distance_gate_m"],
                                            p["possession_gate_factor"], 1.0)
     possession = p["possession_scale"] * margin * confidence
+    if "spread_margin" in column:
+        possession = possession + p["spread_scale"] * X[:, column["spread_margin"]] / 10.0
     if "shape_margin" in column:
         # Gated on the ball being *absent*, not on low confidence: the centroid signal inverts when
         # the ball is visible (the defending team is compact around it), so it must only ever speak
