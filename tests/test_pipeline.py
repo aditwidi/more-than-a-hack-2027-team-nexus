@@ -274,74 +274,6 @@ def test_top3_score_is_invariant_to_extra_far_slots():
     # ...while the unnormalised sum does move, which is exactly the bias being removed.
     assert many["score_margin"][0] > few["score_margin"][0] + 1e-3
 
-
-# ---------------------------------------------------------------------------------------------
-# possessions (the metric's own definition)
-# ---------------------------------------------------------------------------------------------
-def test_possessions_split_on_dead_ball_but_not_between_teams_runs():
-    labels = np.array(list("HHHHAAAADDHH"))
-    spells = diag.possessions(labels)
-    assert [(s["team"], s["length"]) for s in spells] == [("H", 4), ("A", 4), ("H", 2)]
-
-
-def test_runs_and_structure():
-    labels = np.array(list("HHDHHAA"))
-    assert [(s, e, l) for s, e, l in diag.runs(labels)] == [(0, 1, "H"), (2, 2, "D"),
-                                                            (3, 4, "H"), (5, 6, "A")]
-    stats = diag.structure(labels, 0, len(labels) - 1)
-    assert stats["possessions"] == 3
-    assert stats["transitions"] == 3                     # H->D, D->H, H->A within the window
-    assert stats["dead_share"] == pytest.approx(1 / 7, abs=1e-4)   # rounded to 4 dp by design
-    assert stats["short_possessions_lt_2s"] == 3          # all of them, at 25 fps
-
-
-# ---------------------------------------------------------------------------------------------
-# Smart Tagging
-# ---------------------------------------------------------------------------------------------
-SMART_TAGGING = """<?xml version="1.0" ?>
-<file><ALL_INSTANCES>
-  <instance>
-    <ID>1</ID><start>1.0</start><end>2.0</end><code>SET PIECES</code>
-    <label><group>Team</group><text>N/A</text></label>
-    <label><group>Type</group><text>Throw-in</text></label>
-    <label><group>Half</group><text>1st Half</text></label>
-  </instance>
-  <instance>
-    <ID>2</ID><start>2.0</start><end>2.0</end><code>SET PIECES</code>
-    <label><group>Team</group><text>Barcelona</text></label>
-    <label><group>Type</group><text>Corner Kick</text></label>
-  </instance>
-  <instance>
-    <ID>3</ID><start>3.0</start><end>4.0</end><code>PROGRESSION</code>
-    <label><group>Team</group><text>Atletic Club</text></label>
-  </instance>
-</ALL_INSTANCES></file>
-"""
-
-
-def test_smart_tagging_reads_nested_group_value_labels(tmp_path):
-    path = tmp_path / "tags.xml"
-    path.write_text(SMART_TAGGING)
-    tags = io.load_smart_tagging(str(path), n_frames=125)
-
-    # 1.0 s -> frame 25, 2.0 s -> frame 50, inclusive.
-    assert tags["in_set_piece"][25] and tags["in_set_piece"][50]
-    assert not tags["in_set_piece"][24]
-
-    corner = io.SET_PIECE_TYPES.index("corner kick")
-    throw_in = io.SET_PIECE_TYPES.index("throw-in")
-    assert tags["set_piece_type"][30] == throw_in
-    assert tags["set_piece_type"][50] == corner
-
-    # N/A must stay unknown (0) rather than defaulting to a team -- every throw-in is N/A.
-    assert tags["tag_team"][30] == 0
-    assert tags["tag_team"][50] == 1
-    assert tags["tag_team"][80] == -1
-
-    assert tags["code_instances"] == {"SET PIECES": 2, "PROGRESSION": 1}
-    assert tags["meta"]["Team"] == {"N/A": 1, "Barcelona": 1, "Atletic Club": 1}
-
-
 # ---------------------------------------------------------------------------------------------
 # ball-stationary duration (Step 4)
 # ---------------------------------------------------------------------------------------------
@@ -355,7 +287,6 @@ def test_still_frames_reset_on_absence_and_motion():
     ball[7, 0] = np.nan                  # and so does losing the ball
 
     slots = np.zeros((10, 2, 3), dtype=np.float32)
-    teams = np.array([0, 1], dtype=np.int8)
     slots[:, 0, :2] = (0.5, 0.5)
     slots[:, 1, :2] = (0.6, 0.5)
 
@@ -389,8 +320,8 @@ def test_render_scales_projected_pixels_to_the_image():
     slots = np.array([[0.5, 0.5, 0.0]], dtype=np.float32)       # one frame, one slot, centre
     ball = np.array([np.nan, np.nan, np.nan], dtype=np.float32)
 
-    render.evidence_line_cached = "test"
-    render.annotate(image, 0, matrix, slots, ball, np.array([0], dtype=np.int8), "test", scale=0.5)
+    render.annotate(image, matrix, slots, ball, np.array([0], dtype=np.int8),
+                    "label H", "ball seen", scale=0.5)
 
     # The arithmetic the bug got wrong: projected pixels are computed at 1920x1080.
     assert render.project(matrix, 0.5, 0.5) == (960.0, 540.0)

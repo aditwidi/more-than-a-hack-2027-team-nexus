@@ -22,8 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import emissions, io
-from games import half_video_blocks
+from . import emissions
 
 LABELS = np.array(["H", "A", "D"])
 NO_ANSWER = "X"

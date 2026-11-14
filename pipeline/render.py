@@ -41,7 +41,6 @@ import pandas as pd
 from PIL import Image, ImageDraw
 
 from . import features, io
-from games import half_video_blocks
 
 HOME_COLOUR = (230, 60, 60)
 AWAY_COLOUR = (60, 110, 230)
@@ -81,7 +80,8 @@ def evidence_line(frame, X, column):
     return "  ".join(parts)
 
 
-def annotate(image, frame, matrix, slots, ball, team_of_slot, text, scale=1.0, gt=None):
+def annotate(image, matrix, slots, ball, team_of_slot, headline, detail,
+             scale=1.0, gt=None):
     """Draw players, the ball, the pitch outline and a text panel.
 
     ``scale`` converts projected pixels (always computed at 1920x1080) to the rendered image size --
@@ -118,22 +118,19 @@ def annotate(image, frame, matrix, slots, ball, team_of_slot, text, scale=1.0, g
             px, py = point[0] * scale, point[1] * scale
             draw.ellipse((px - 5, py - 5, px + 5, py + 5), fill=BALL_COLOUR, outline=(0, 0, 0))
 
-    disagree = gt is not None and gt in ("H", "A", "D") and gt != text.split()[0]
+    disagree = gt is not None and gt in ("H", "A", "D") and gt != headline.split()[-1]
     draw.rectangle((8, 8, 8 + 470, 8 + 48), fill=(0, 0, 0, 165))
     if disagree:
         draw.rectangle((8, 8, 8 + 470, 8 + 48), outline=DISAGREE_COLOUR, width=3)
-    draw.text((16, 13), text, fill=(255, 255, 255))
-    detail = "gt {}".format(gt) if gt is not None else ""
-    draw.text((16, 32), "{}   {}".format(evidence_line_cached, detail), fill=(225, 225, 225))
+    draw.text((16, 13), headline, fill=(255, 255, 255))
+    if not disagree:
+        draw.text((16, 32), detail, fill=(225, 225, 225))
+    else:
+        draw.text((16, 32), detail, fill=DISAGREE_COLOUR)
     return image
 
 
-# `annotate` is hot (one call per frame), so the evidence string is passed in a module-level slot
-# rather than recomputed: it is built by the caller, which already has the feature matrix row.
-evidence_line_cached = ""
-
-
-def render_stream(video_path, matrices, slots_all, ball_all, teams, labels, texts, gt_labels,
+def render_stream(video_path, matrices, slots_all, ball_all, teams, labels, X, column, gt_labels,
                   start, end, out_path, width=960, fps=5.0, progress=500):
     """Render [start, end] frame by frame, streamed: ffmpeg -> memory -> ffmpeg.
 
@@ -158,7 +155,6 @@ def render_stream(video_path, matrices, slots_all, ball_all, teams, labels, text
          out_path],
         stdin=subprocess.PIPE)
 
-    global evidence_line_cached
     order = np.argsort(teams, kind="stable")
     index = 0
     try:
@@ -169,12 +165,14 @@ def render_stream(video_path, matrices, slots_all, ball_all, teams, labels, text
             frame = min(int(round(start + index * step)), io.N_FRAMES - 1)
             image = Image.frombytes("RGB", (width, height), buffer)
 
-            evidence_line_cached = texts[frame]
-            text = "frame {}  t={:.1f}s   label {}".format(
-                frame, frame / float(io.FPS), labels[frame])
             gt = gt_labels[frame] if gt_labels is not None else None
-            annotate(image, frame, matrices[frame], slots_all[frame][order], ball_all[frame],
-                     teams[order], text, scale=width / 1920.0, gt=gt)
+            headline = "frame {}  t={:.1f}s   label {}".format(
+                frame, frame / float(io.FPS), labels[frame])
+            detail = evidence_line(frame, X, column)
+            if gt is not None:
+                detail += "   gt {}".format(gt)
+            annotate(image, matrices[frame], slots_all[frame][order], ball_all[frame],
+                     teams[order], headline, detail, scale=width / 1920.0, gt=gt)
             encoder.stdin.write(image.tobytes())
 
             index += 1
@@ -257,7 +255,6 @@ def main(argv=None):
 
     assets = io.load_all()
     slots_all, ball_all, teams = assets["slots"], assets["ball"], assets["slot_teams"]
-    texts = [evidence_line(f, X, column) for f in range(0, io.N_FRAMES, 1)] if False else None
     matrices = load_homography_matrices(paths["homography"])
     print("loaded {:,} homographies".format(len(matrices)))
 
@@ -269,9 +266,8 @@ def main(argv=None):
         print("rendering frames {:,}..{:,} at {:g} fps, {} px -> {}".format(
             args.start, end, fps, args.width, os.path.relpath(args.video, io.ROOT)))
         rendered = render_stream(
-            paths["video"], matrices, slots_all, ball_all, teams, labels,
-            EvidenceCache(X, column), gt_labels, args.start, end, args.video,
-            width=args.width, fps=fps)
+            paths["video"], matrices, slots_all, ball_all, teams, labels, X, column,
+            gt_labels, args.start, end, args.video, width=args.width, fps=fps)
         print("wrote {} ({:,} frames)".format(os.path.relpath(args.video, io.ROOT), rendered))
         return 0
 
@@ -285,15 +281,13 @@ def main(argv=None):
         images = []
         for frame, png in zip(frames, pngs):
             image = Image.open(png).convert("RGB")
-            global evidence_line_cached
-            evidence_line_cached = evidence_line(frame, X, column)
-            text = "frame {}  t={:.1f}s   label {}".format(
-                frame, frame / float(io.FPS), labels[frame])
             gt = gt_labels[frame] if gt_labels is not None else None
-            if gt is not None:
-                text += "  (gt {})".format(gt)
-            annotate(image, frame, matrices[frame], slots_all[frame][order], ball_all[frame],
-                     teams[order], text, scale=image.width / 1920.0, gt=gt)
+            headline = "frame {}  t={:.1f}s   label {}".format(
+                frame, frame / float(io.FPS), labels[frame])
+            detail = evidence_line(frame, X, column) + (
+                "   gt {}".format(gt) if gt is not None else "")
+            annotate(image, matrices[frame], slots_all[frame][order], ball_all[frame],
+                     teams[order], headline, detail, scale=image.width / 1920.0, gt=gt)
             images.append(image)
         sheet = contact_sheet(images)
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
@@ -303,16 +297,6 @@ def main(argv=None):
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     return 0
-
-
-class EvidenceCache:
-    """Lazily-formatted evidence strings, one per frame (cheap: built on access, not upfront)."""
-
-    def __init__(self, X, column):
-        self.X, self.column = X, column
-
-    def __getitem__(self, frame):
-        return evidence_line(frame, self.X, self.column)
 
 
 if __name__ == "__main__":

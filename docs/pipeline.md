@@ -384,12 +384,15 @@ match** — not ground truth, but evidence. `pipeline/verify.py` checks our labe
 
 | check | result | n |
 |---|---|---|
-| PROGRESSION phase start: tagged team holds the ball | **0.970** (majority 0.712) | 66 |
-| DEFENDING IN MIDDLE THIRD start: the *other* team holds it | **0.970** | 66 |
+| PROGRESSION phase start: tagged team holds the ball | **0.939** (majority 0.712) | 66 |
+| DEFENDING IN MIDDLE THIRD start: the *other* team holds it | **0.939** | 66 |
 | ATTACKING TRANSITION: tagged team has the ball within 5 s | **0.833** (majority 0.542) | 24 |
 | GOALS: scoring team had the ball at some point in the preceding 25 s | **0.750** | 4 |
 | Restarts: tagged team appears in the phase | **0.963** (majority 0.593) | 27 |
-| BUILD UP / CREATING CHANCES / BALL IN FINAL THIRD / BALL IN THE BOX / LONG BALL | 0.43–0.60 | 211 |
+| BUILD UP / CREATING CHANCES / BALL IN FINAL THIRD / BALL IN THE BOX / LONG BALL | 0.43–0.59 | 231 |
+
+(Values are after the set-piece rule of Step 7, which labels more restarts dead and so moved
+PROGRESSION from 0.970 to 0.939 — a visible trade rather than a hidden one.)
 
 The last row is **not** a possession check and should not be read as one: these codes describe a
 zone or an action, and rendering the frames showed the tag can sit over the *aftermath* of the

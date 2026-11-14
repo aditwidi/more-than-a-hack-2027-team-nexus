@@ -23,7 +23,7 @@ import os
 
 import numpy as np
 
-from . import decode, diag, emissions, features, io
+from . import decode, diag, features, io
 from games import half_video_blocks
 
 # name -> (overrides, use_cleanup).
