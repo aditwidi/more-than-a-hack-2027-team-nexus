@@ -366,6 +366,77 @@ they sit.
 | restart prior at weight 2.5 (rejected) | 408 | 7.61 | 0.516 |
 | **final** | **418** | **8.32** | **0.457** |
 
+## Verification: how to check a submission on the 154 minutes that have no labels
+
+Two tools, because the question has two halves.
+
+```bash
+python -m pipeline.verify                                    # quantitative, whole match
+python -m pipeline.render --start 45900 --seconds 4 --out artifacts/check.png
+python -m pipeline.render --start 11185 --seconds 20 --video artifacts/clip.mp4
+```
+
+### Quantitative: Smart Tagging as an independent soft oracle
+
+Smart Tagging is inferred by a separate process from the same video and names a team for 602 of 638
+phases, so it can be used as an oracle that is **independent of our pipeline and covers the whole
+match** — not ground truth, but evidence. `pipeline/verify.py` checks our labels against it:
+
+| check | result | n |
+|---|---|---|
+| PROGRESSION phase start: tagged team holds the ball | **0.970** (majority 0.712) | 66 |
+| DEFENDING IN MIDDLE THIRD start: the *other* team holds it | **0.970** | 66 |
+| ATTACKING TRANSITION: tagged team has the ball within 5 s | **0.833** (majority 0.542) | 24 |
+| GOALS: scoring team had the ball at some point in the preceding 25 s | **0.750** | 4 |
+| Restarts: tagged team appears in the phase | **0.963** (majority 0.593) | 27 |
+| BUILD UP / CREATING CHANCES / BALL IN FINAL THIRD / BALL IN THE BOX / LONG BALL | 0.43–0.60 | 211 |
+
+The last row is **not** a possession check and should not be read as one: these codes describe a
+zone or an action, and rendering the frames showed the tag can sit over the *aftermath* of the
+action (see below). Internal consistency checks are in the same report: 15.2% of our `D` frames have
+a visible ball, 19% of `D` frames have the ball outside the pitch, and only 30 of 86,262 live frames
+have the ball outside the pitch.
+
+### Visual: the tracking projected onto the video
+
+`pipeline/render.py` projects every tracked slot through the frame's homography (the same
+coordinate convention the ATD uses), colours players by team, marks the ball, and burns in the
+predicted label plus the evidence the emission used (ball seen/missing, gap, margin, mean speed, set
+piece, out of play). Output is a contact sheet or an annotated mp4.
+
+What it settled, on two examples:
+
+1. **Frame 45947, a GOALS phase.** The 20 s before the tag show live play (ball seen, players spread,
+   mean speed 3.8 m/s, label `A`), then the ball is lost and players **converge and walk apart for
+   20+ seconds** with the ball untracked and out of play (label `D`). The goal tag sits at or after
+   the stoppage that follows the goal, so "the scoring team had the ball immediately before the tag"
+   is a false premise — which is why the first version of that check failed 4/4.
+2. **Frame 36813, a BALL IN FINAL THIRD phase we "failed".** Players walking near the box, ball
+   missing, `OUT OF PLAY` set, mean speed 1.0–1.4 m/s: unambiguously a stoppage. Our `D` is right;
+   the tag covers the aftermath of the attack.
+
+### The verifier needed verifying too
+
+Three bugs were found *by looking at the frames*, all of which had produced alarming numbers:
+
+| symptom | cause |
+|---|---|
+| ATTACKING TRANSITION 1/24, GOALS 0/4 | `expected_sign` treated every non-possession code as the *defending* team, inverting both checks |
+| phases before kickoff always failed | phases outside the graded halves carry `X` labels and were being scored |
+| corners "failed" 20/27 | a corner is crossed into the box, so the team that took it often does *not* hold majority possession afterwards |
+
+Lesson worth writing down: an unverified verifier produces numbers that look like findings. Every
+number in the table above is after those fixes, and the ones that remain below their majority
+baseline are reported as invalid checks rather than as failures of the submission.
+
+### The rules boundary
+
+Inspecting the video and the data is explicitly allowed (`RULES.md`: "watching is not the problem").
+Converting what we see into labels, hand corrections, or constants tied to specific frames is not.
+Both tools only *report*; neither writes a submission, and no constant in `pipeline/emissions.py`
+came from a frame we looked at — the two that came from measurement came from aggregate rates over
+hundreds of frames (the dead-gap weight and the centroid sign), documented in Step 5.
+
 ## Step 6: two more ideas tested, both rejected on measurement
 
 ### 1. Team spread — predictive, but it costs the ranking metric

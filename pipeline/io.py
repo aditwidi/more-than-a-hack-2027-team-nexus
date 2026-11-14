@@ -146,6 +146,46 @@ def load_homography(path, n_frames=N_FRAMES):
     return error, valid
 
 
+def load_phases(path, n_frames=N_FRAMES):
+    """Every Smart Tagging instance as a dict: code, team sign, type, half, frame range.
+
+    Separate from the per-frame arrays because verification needs the *phases* -- "at the start of
+    this Build Up, was the tagged team actually the one we labelled?" -- which an aggregated array
+    cannot express.
+    """
+    phases = []
+    root = ET.parse(path).getroot()
+    for instance in root.iter("instance"):
+        start = _seconds(instance.findtext("start"))
+        end = _seconds(instance.findtext("end"))
+        if start is None:
+            continue
+        labels = {}
+        for label in instance.iter("label"):
+            group = (label.findtext("group") or "").strip()
+            value = (label.findtext("text") or "").strip()
+            if group:
+                labels[group] = value
+
+        team = labels.get("Team", "").lower()
+        if team.startswith("barcelona"):
+            sign = 1
+        elif team.startswith("atletic") or team.startswith("athletic"):
+            sign = -1
+        else:
+            sign = 0
+
+        first = max(0, int(round(start * FPS)))
+        last = min(n_frames - 1, int(round((end if end is not None else start) * FPS)))
+        if last < first:
+            continue
+        phases.append({"code": (instance.findtext("code") or "").strip().upper(),
+                       "team": sign, "type": labels.get("Type", ""),
+                       "half": labels.get("Half", ""),
+                       "first": first, "last": last})
+    return phases
+
+
 def load_smart_tagging(path, n_frames=N_FRAMES):
     """Smart Tagging as per-frame flags.
 
