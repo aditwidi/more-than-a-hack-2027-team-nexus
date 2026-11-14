@@ -386,7 +386,7 @@ def test_render_scales_projected_pixels_to_the_image():
     image = Image.new("RGB", (960, 540), (0, 0, 0))
     # Identity-in-spirit matrix: normalised pitch (0-1) -> 1920x1080 pixels.
     matrix = np.array([1920.0, 0.0, 0.0, 0.0, 1080.0, 0.0, 0.0, 0.0, 1.0])
-    slots = np.array([[[0.5, 0.5, 0.0]]], dtype=np.float32)     # centre of the pitch
+    slots = np.array([[0.5, 0.5, 0.0]], dtype=np.float32)       # one frame, one slot, centre
     ball = np.array([np.nan, np.nan, np.nan], dtype=np.float32)
 
     render.evidence_line_cached = "test"
