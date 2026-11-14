@@ -367,3 +367,34 @@ def test_still_frames_reset_on_absence_and_motion():
     run = index - last_moving
 
     assert run.tolist() == [1, 2, 3, 4, 0, 1, 2, 0, 1, 2]
+
+
+# ---------------------------------------------------------------------------------------------
+# render alignment (Step 7)
+# ---------------------------------------------------------------------------------------------
+def test_render_scales_projected_pixels_to_the_image():
+    """A projected coordinate is in 1920x1080 pixels; drawing on a smaller image must scale it.
+
+    Regression test for a real bug: the scale factor was hardcoded to 1.0 after the streaming
+    rewrite, so every circle was drawn at 1x while the frame was 0.5x, and the overlay looked like
+    a broken homography.
+    """
+    from PIL import Image
+
+    from pipeline import render
+
+    image = Image.new("RGB", (960, 540), (0, 0, 0))
+    # Identity-in-spirit matrix: normalised pitch (0-1) -> 1920x1080 pixels.
+    matrix = np.array([1920.0, 0.0, 0.0, 0.0, 1080.0, 0.0, 0.0, 0.0, 1.0])
+    slots = np.array([[[0.5, 0.5, 0.0]]], dtype=np.float32)     # centre of the pitch
+    ball = np.array([np.nan, np.nan, np.nan], dtype=np.float32)
+
+    render.evidence_line_cached = "test"
+    render.annotate(image, 0, matrix, slots, ball, np.array([0], dtype=np.int8), "test", scale=0.5)
+
+    pixels = np.asarray(image)
+    centre = pixels[270 - 8:270 + 8, 480 - 8:480 + 8]
+    assert centre.max() > 0, "nothing was drawn at the scaled position"
+
+    # And the unscaled position (960, 540) must be outside the image, which is what the bug did.
+    assert pixels[532:, 952:].max() == 0

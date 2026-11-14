@@ -82,8 +82,22 @@ def evidence_line(frame, X, column):
 
 
 def annotate(image, frame, matrix, slots, ball, team_of_slot, text, scale=1.0, gt=None):
-    """Draw players, the ball and a text panel. ``team_of_slot`` is 0=home, 1=away."""
+    """Draw players, the ball, the pitch outline and a text panel.
+
+    ``scale`` converts projected pixels (always computed at 1920x1080) to the rendered image size --
+    forgetting it puts every circle at the wrong offset, which looks exactly like a broken
+    homography. The pitch rectangle is drawn from the same matrix, so alignment can be checked
+    against the touchlines in the image itself.
+    """
     draw = ImageDraw.Draw(image, "RGBA")
+
+    outline = []
+    for x, y in ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)):
+        point = project(matrix, x, y)
+        if point and all(np.isfinite(point)):
+            outline.append((point[0] * scale, point[1] * scale))
+    if len(outline) == 4:
+        draw.line(outline + [outline[0]], fill=(255, 255, 255), width=2)
 
     for index in range(slots.shape[0]):
         x, y = slots[index, 0], slots[index, 1]
@@ -160,7 +174,7 @@ def render_stream(video_path, matrices, slots_all, ball_all, teams, labels, text
                 frame, frame / float(io.FPS), labels[frame])
             gt = gt_labels[frame] if gt_labels is not None else None
             annotate(image, frame, matrices[frame], slots_all[frame][order], ball_all[frame],
-                     teams[order], text, scale=1.0, gt=gt)
+                     teams[order], text, scale=width / 1920.0, gt=gt)
             encoder.stdin.write(image.tobytes())
 
             index += 1
@@ -279,7 +293,7 @@ def main(argv=None):
             if gt is not None:
                 text += "  (gt {})".format(gt)
             annotate(image, frame, matrices[frame], slots_all[frame][order], ball_all[frame],
-                     teams[order], text, scale=1.0, gt=gt)
+                     teams[order], text, scale=image.width / 1920.0, gt=gt)
             images.append(image)
         sheet = contact_sheet(images)
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
