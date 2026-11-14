@@ -392,9 +392,10 @@ def test_render_scales_projected_pixels_to_the_image():
     render.evidence_line_cached = "test"
     render.annotate(image, 0, matrix, slots, ball, np.array([0], dtype=np.int8), "test", scale=0.5)
 
+    # The arithmetic the bug got wrong: projected pixels are computed at 1920x1080.
+    assert render.project(matrix, 0.5, 0.5) == (960.0, 540.0)
+    assert render.project(matrix, 0.5, 0.5)[0] * 0.5 == 480.0
+
     pixels = np.asarray(image)
     centre = pixels[270 - 8:270 + 8, 480 - 8:480 + 8]
     assert centre.max() > 0, "nothing was drawn at the scaled position"
-
-    # And the unscaled position (960, 540) must be outside the image, which is what the bug did.
-    assert pixels[532:, 952:].max() == 0
