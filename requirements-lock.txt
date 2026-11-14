@@ -1,0 +1,5 @@
+# Exact versions this pipeline was developed and measured against (python 3.14.7).
+# requirements.txt is the loose form; this file is what the submission's numbers came from.
+numpy==2.5.4
+pandas==3.0.1
+pytest==9.2.0
